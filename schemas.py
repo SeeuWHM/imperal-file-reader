@@ -13,10 +13,9 @@ class EmptyParams(BaseModel):
 
 
 class ReceiveFilesParams(BaseModel):
-    # Raw payload from ui.FileUpload's on_upload action. Items may be dicts
-    # ({filename|name, content|data|base64, mime_type|type}) OR bare base64
-    # strings (possibly "data:<mime>;base64,…" URIs) — decoded defensively in
-    # handlers_upload (the shape is confirmed live by the fileupload-spike).
+    # Raw payload from ui.FileUpload's on_upload action. Live-verified shape
+    # (2026-07-05): list of dicts, each {data_base64, name, mime_type, size} —
+    # decoded in handlers_upload._decode_one.
     files: list = Field(default_factory=list)
 
 

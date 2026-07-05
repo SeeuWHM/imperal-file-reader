@@ -1,10 +1,10 @@
 """File Reader · upload path.
 
 receive_files is triggered by the panel's ui.FileUpload widget (on_upload),
-NOT called conversationally. It must be defensive about the payload shape the
-frontend actually sends — dicts ({filename|name, content|data|base64,
-mime_type|type}) or bare base64 strings, possibly "data:<mime>;base64,…" URIs
-(the exact shape is confirmed live by the fileupload-spike). It does the fast,
+NOT called conversationally. Live-verified payload contract (2026-07-05): the
+`files` param is a list of dicts, each {data_base64: <bare base64, no data: URI>,
+name: <filename>, mime_type: <mime>, size: <int>}. The decoder also tolerates a
+bare base64 string / data: URI as a harmless fallback. It does the fast,
 synchronous part inline (decode + validate + quota + create the pending
 records, for instant panel feedback) and hands the heavy engine ingest to a
 background task so the upload returns immediately.
@@ -51,8 +51,11 @@ def _decode_one(raw) -> tuple[str, str | None, bytes]:
     filename: str | None = None
     mime: str | None = None
     if isinstance(raw, dict):
-        content = raw.get("content") or raw.get("data") or raw.get("base64") or ""
-        filename = raw.get("filename") or raw.get("name")
+        # Live-verified on_upload contract (2026-07-05): each item is
+        # {data_base64: <bare base64>, name: <filename>, mime_type: <mime>, size: <int>}.
+        # Aliases kept only as a harmless forward-compat fallback.
+        content = raw.get("data_base64") or raw.get("content") or raw.get("data") or raw.get("base64") or ""
+        filename = raw.get("name") or raw.get("filename")
         mime = raw.get("mime_type") or raw.get("type") or raw.get("content_type")
     elif isinstance(raw, str):
         content = raw
