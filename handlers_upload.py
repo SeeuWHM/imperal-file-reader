@@ -26,6 +26,24 @@ log = logging.getLogger("file_reader")
 _UNSUPPORTED_PREFIXES = ("video/", "audio/")
 
 
+def _describe(raw) -> str:
+    """Compact, non-destructive description of one on_upload item's shape.
+    The ui.FileUpload on_upload payload schema is not publicly documented, so we
+    learn it empirically: report the Python type and (for dicts) each key with
+    its value type and string length, without ever echoing file bytes."""
+    if isinstance(raw, dict):
+        parts = []
+        for k in sorted(raw.keys()):
+            v = raw[k]
+            extra = f"[len={len(v)}]" if isinstance(v, str) else (f"={v!r}" if isinstance(v, (int, float, bool)) else "")
+            parts.append(f"{k}:{type(v).__name__}{extra}")
+        return "dict{" + ", ".join(parts) + "}"
+    if isinstance(raw, str):
+        head = raw[:24]
+        return f"str[len={len(raw)}]{' data-uri' if raw.startswith('data:') else ''} head={head!r}"
+    return f"{type(raw).__name__} repr={str(raw)[:80]!r}"
+
+
 def _decode_one(raw) -> tuple[str, str | None, bytes]:
     """Return (filename, mime_type, content_bytes) from one upload item, or
     raise. Handles a dict payload or a bare base64 string, and strips a
@@ -99,9 +117,14 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
         total_bytes += len(content)
 
     if not decoded:
+        # DIAGNOSTIC (temporary): the on_upload payload shape is undocumented and
+        # nothing decoded — surface the exact shape the frontend sent so we can
+        # write a precise decoder. Never echoes file bytes.
+        shapes = " | ".join(_describe(r) for r in (params.files or [])[:3]) or "files=[] (empty payload)"
+        log.warning("receive_files: no files accepted; payload shape → %s", shapes)
         return ActionResult.success(
             data=build_receive_result([], rejected),
-            summary="No files were accepted." + (f" {len(rejected)} rejected." if rejected else ""),
+            summary=f"No files were accepted (diagnostic). Payload shape → {shapes}",
         )
 
     try:
