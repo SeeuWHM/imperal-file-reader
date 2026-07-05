@@ -27,6 +27,7 @@ log = logging.getLogger("file_reader")
     ),
 )
 async def fn_list_files(ctx, params: EmptyParams) -> ActionResult:
+    await lifecycle.reconcile_pending(ctx)
     recs = await lifecycle.all_files(ctx)
     ready = sum(1 for r in recs if r.get("status") == "ready")
     return ActionResult.success(

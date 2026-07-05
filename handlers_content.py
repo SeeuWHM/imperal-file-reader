@@ -11,7 +11,7 @@ import logging
 from imperal_sdk.chat.action_result import ActionResult
 
 from app import chat
-from providers import content_ops
+from providers import content_ops, lifecycle
 from schemas import FileIdsParams, ReadFilesParams, SearchFilesParams
 from schemas_sdl import (
     FileOverviewList, FileTextList, SearchResults,
@@ -30,6 +30,7 @@ log = logging.getLogger("file_reader")
     ),
 )
 async def fn_read_files(ctx, params: ReadFilesParams) -> ActionResult:
+    await lifecycle.reconcile_pending(ctx)
     try:
         results = await content_ops.read_files(ctx, params.file_ids, params.offset, params.limit)
     except Exception as e:  # noqa: BLE001
@@ -48,6 +49,7 @@ async def fn_read_files(ctx, params: ReadFilesParams) -> ActionResult:
     ),
 )
 async def fn_file_overview(ctx, params: FileIdsParams) -> ActionResult:
+    await lifecycle.reconcile_pending(ctx)
     try:
         results = await content_ops.file_overview(ctx, params.file_ids)
     except Exception as e:  # noqa: BLE001
@@ -64,6 +66,7 @@ async def fn_file_overview(ctx, params: FileIdsParams) -> ActionResult:
     ),
 )
 async def fn_search_files(ctx, params: SearchFilesParams) -> ActionResult:
+    await lifecycle.reconcile_pending(ctx)
     try:
         data = await content_ops.search_files(ctx, params.query, file_ids=(params.file_ids or None), k=params.k)
     except Exception as e:  # noqa: BLE001

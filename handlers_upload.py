@@ -73,19 +73,6 @@ def _decode_one(raw) -> tuple[str, str | None, bytes]:
     return (filename or "file"), mime, base64.b64decode(content, validate=False)
 
 
-async def _ingest_job(ctx, items: list[tuple[dict, bytes]]) -> ActionResult:
-    """Background: push each file's bytes into the engine. Bytes live ONLY in
-    this coroutine's memory, never in the store. Returns an ActionResult (a
-    completion message + a panel refresh) per the SDK's background contract."""
-    res = await lifecycle.ingest_many(ctx, items)
-    tail = f" ({res['failed']} failed)" if res.get("failed") else ""
-    return ActionResult.success(
-        data=build_receive_result([], []),
-        summary=f"✅ Indexed {res.get('ingested', 0)} file(s){tail}.",
-        refresh_panels=["file_reader_files"],
-    )
-
-
 @chat.function(
     "receive_files", action_type="write", event="file_reader.files_received",
     effects=["create:file"],
@@ -157,18 +144,15 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
     except Exception as e:  # noqa: BLE001 — quota is a user-facing, non-retryable decision
         return ActionResult.error(str(e), retryable=False)
 
-    to_ingest: list[tuple[dict, bytes]] = []
+    # Synchronous ingest: POST each file to the engine and record its immediate
+    # status. The POST only stages the upload (fast, any file type/size); the
+    # engine's own durable drain loop does the heavy extraction+embedding and the
+    # panel/read paths reconcile the outcome. We do NOT spawn a background task —
+    # it would be cancelled on return, freezing the record (2026-07-05 bug).
     for fn, mime, content, h in fresh:
-        rec = await lifecycle.create_pending(ctx, fn, mime, len(content), content_hash=h)
+        rec = await lifecycle.ingest_now(ctx, fn, mime, content, content_hash=h)
         received.append({"file_id": rec["file_id"], "filename": fn,
-                         "size_bytes": len(content), "status": "queued"})
-        to_ingest.append((rec, content))
-
-    try:
-        await ctx.background_task(_ingest_job(ctx, to_ingest), long_running=True, name="filereader-ingest")
-    except Exception as e:  # noqa: BLE001 — no background hook (e.g. dev): ingest inline
-        log.warning("could not start background ingest, running inline: %s", e)
-        await lifecycle.ingest_many(ctx, to_ingest)
+                         "size_bytes": len(content), "status": rec.get("status")})
 
     summary = f"{len(received)} file(s) received and indexing"
     if already:

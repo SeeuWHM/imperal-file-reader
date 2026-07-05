@@ -60,6 +60,7 @@ def _file_items(files: list[dict]) -> list:
 @ext.panel("file_reader_files", slot="right", title="File Reader", icon="FileText")
 async def build_file_reader_panel(ctx, **kwargs) -> ui.UINode:
     try:
+        await lifecycle.reconcile_pending(ctx)
         files = await lifecycle.all_files(ctx)
     except Exception as exc:  # noqa: BLE001
         log.error(f"file_reader panel error: {exc}")

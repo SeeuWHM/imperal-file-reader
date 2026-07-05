@@ -20,6 +20,20 @@ async def test_create_pending_is_visible_immediately(make_ctx):
     assert files[0]["file_id"] == rec["file_id"]
 
 
+async def test_active_hashes_only_counts_held_records(make_ctx):
+    # idempotency key set: only pending/indexing/ready records with a hash count,
+    # so a failed/expired file can be re-uploaded but a live one is deduped.
+    ctx = make_ctx()
+    ctx.store.seed("filereader_files", [
+        {"status": lifecycle.READY, "content_hash": "aaa"},
+        {"status": lifecycle.INDEXING, "content_hash": "bbb"},
+        {"status": lifecycle.FAILED, "content_hash": "ccc"},
+        {"status": lifecycle.EXPIRED, "content_hash": "ddd"},
+        {"status": lifecycle.PENDING, "content_hash": None},
+    ])
+    assert await lifecycle.active_hashes(ctx) == {"aaa", "bbb"}
+
+
 async def test_quota_blocks_too_many_files_per_upload(make_ctx):
     ctx = make_ctx()
     with pytest.raises(RuntimeError, match="At most"):
@@ -51,50 +65,86 @@ async def test_quota_ignores_expired_records(make_ctx):
     await lifecycle.check_quota(ctx, adding=1, adding_bytes=100)
 
 
-async def test_ingest_one_success_marks_ready_with_document_id(make_ctx, resp):
+async def test_ingest_now_processed_marks_ready_with_document_id(make_ctx, resp):
     ctx = make_ctx([resp(200, {"success": True, "data": {"documents": [
         {"document_id": 7, "status": "processed", "chunk_count": 3, "error": None,
          "error_code": None, "expires_at": "2026-07-19T00:00:00+00:00"}
     ]}})])
-    rec = await lifecycle.create_pending(ctx, "a.txt", "text/plain", 5)
-    result = await lifecycle.ingest_one(ctx, rec, b"hello")
+    result = await lifecycle.ingest_now(ctx, "a.txt", "text/plain", b"hello", content_hash="h1")
     assert result["status"] == lifecycle.READY
     assert result["document_id"] == 7
     assert result["chunk_count"] == 3
     assert result["expires_at"] is not None
+    # record persisted with its content hash (the idempotency key)
+    assert (await lifecycle.all_files(ctx))[0]["content_hash"] == "h1"
 
 
-async def test_ingest_one_engine_unsupported_marks_failed(make_ctx, resp):
+async def test_ingest_now_engine_pending_marks_indexing(make_ctx, resp):
+    # The engine is async: POST returns pending at once; we store the
+    # document_id and leave the record 'indexing' for reconcile to finish.
+    ctx = make_ctx([resp(200, {"success": True, "data": {"documents": [
+        {"document_id": 11, "status": "pending", "chunk_count": 0, "error": None,
+         "error_code": None, "expires_at": None}
+    ]}})])
+    result = await lifecycle.ingest_now(ctx, "a.txt", "text/plain", b"hello")
+    assert result["status"] == lifecycle.INDEXING
+    assert result["document_id"] == 11
+
+
+async def test_ingest_now_engine_unsupported_marks_failed(make_ctx, resp):
     ctx = make_ctx([resp(200, {"success": True, "data": {"documents": [
         {"document_id": None, "status": "unsupported", "error": "video is not readable",
          "error_code": "unsupported_format", "chunk_count": 0, "expires_at": None}
     ]}})])
-    rec = await lifecycle.create_pending(ctx, "a.mp4", "video/mp4", 5)
-    result = await lifecycle.ingest_one(ctx, rec, b"\x00\x01")
+    result = await lifecycle.ingest_now(ctx, "a.mp4", "video/mp4", b"\x00\x01")
     assert result["status"] == lifecycle.FAILED
     assert result["error_code"] == "unsupported_format"
 
 
-async def test_ingest_one_network_failure_marks_failed_not_raises(make_ctx):
+async def test_ingest_now_network_failure_marks_failed_not_raises(make_ctx):
     ctx = make_ctx([ConnectionError("boom"), ConnectionError("boom")])
-    rec = await lifecycle.create_pending(ctx, "a.txt", "text/plain", 5)
-    result = await lifecycle.ingest_one(ctx, rec, b"x")
+    result = await lifecycle.ingest_now(ctx, "a.txt", "text/plain", b"x")
     assert result["status"] == lifecycle.FAILED
     assert result["error_code"] == "internal_error"
 
 
-async def test_ingest_many_parallel_one_bad_file_does_not_block_others(make_ctx, resp):
-    ctx = make_ctx([
-        resp(200, {"success": True, "data": {"documents": [
-            {"document_id": 1, "status": "processed", "chunk_count": 1, "error": None,
-             "error_code": None, "expires_at": None}]}}),
-        ConnectionError("boom"),
-        ConnectionError("boom"),
+async def test_reconcile_promotes_indexing_to_ready(make_ctx, resp):
+    # engine finished in its own drain loop → reconcile pulls the outcome in
+    ctx = make_ctx([resp(200, {"success": True, "data":
+        {"document_id": 7, "status": "processed", "chunk_count": 2, "error": None,
+         "error_code": None, "expires_at": None}})])
+    ctx.store.seed("filereader_files", [
+        {"status": lifecycle.INDEXING, "document_id": 7, "filename": "a.txt",
+         "uploaded_at": time.time(), "chunk_count": 0}
     ])
-    r1 = await lifecycle.create_pending(ctx, "ok.txt", "text/plain", 5)
-    r2 = await lifecycle.create_pending(ctx, "bad.txt", "text/plain", 5)
-    summary = await lifecycle.ingest_many(ctx, [(r1, b"a"), (r2, b"b")], concurrency=2)
-    assert summary == {"ingested": 1, "failed": 1}
+    await lifecycle.reconcile_pending(ctx)
+    rec = (await lifecycle.all_files(ctx))[0]
+    assert rec["status"] == lifecycle.READY
+    assert rec["chunk_count"] == 2
+
+
+async def test_reconcile_leaves_still_processing_as_indexing(make_ctx, resp):
+    ctx = make_ctx([resp(200, {"success": True, "data":
+        {"document_id": 9, "status": "processing", "chunk_count": 0, "error": None,
+         "error_code": None, "expires_at": None}})])
+    ctx.store.seed("filereader_files", [
+        {"status": lifecycle.INDEXING, "document_id": 9, "filename": "a.txt",
+         "uploaded_at": time.time()}
+    ])
+    await lifecycle.reconcile_pending(ctx)
+    assert (await lifecycle.all_files(ctx))[0]["status"] == lifecycle.INDEXING
+
+
+async def test_reconcile_fails_stale_pending_without_document(make_ctx):
+    # a pending record that never got an engine doc (interrupted upload) and is
+    # stale → failed so it can be re-uploaded; NO engine call is made for it
+    ctx = make_ctx([])
+    ctx.store.seed("filereader_files", [
+        {"status": lifecycle.PENDING, "document_id": None, "filename": "a.txt",
+         "uploaded_at": time.time() - lifecycle.STALE_PENDING_S - 1}
+    ])
+    await lifecycle.reconcile_pending(ctx)
+    assert (await lifecycle.all_files(ctx))[0]["status"] == lifecycle.FAILED
 
 
 async def test_ensure_ready_returns_document_id_when_ready(make_ctx):

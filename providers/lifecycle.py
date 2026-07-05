@@ -24,8 +24,8 @@ Unlike Google Drive Connector, there is no external source to re-fetch from:
 once a file's engine doc is gone (TTL purge), it is gone for good — status
 flips to `expired`, never re-ingested (there is nothing left to re-ingest).
 Raw bytes are NEVER persisted here or anywhere else in this extension: they
-exist only in the background ingest job's memory, between receipt and the
-single engine call in `ingest_one`.
+exist only in memory for the span of the single engine call in `ingest_now`,
+then are discarded — the engine holds the only copy of the extracted text.
 """
 from __future__ import annotations
 
@@ -159,51 +159,67 @@ async def create_pending(ctx, filename: str, mime_type: str | None, size_bytes: 
     return rec
 
 
-async def ingest_one(ctx, rec: dict, content: bytes) -> dict:
-    """Ingest ONE file's bytes into the engine. `content` must never outlive
-    this call — the background job holds it in a local variable only, never
-    in the store. Idempotent by sha256 on the engine side (a resend of the
-    same bytes is a fast `cached` hit)."""
-    rec = await set_fields(ctx, rec, status=INDEXING, error=None, error_code=None)
-    try:
-        doc = await extractor.ingest(
-            ctx, filename=rec.get("filename") or "file", content=content,
-            mime_type=rec.get("mime_type"),
-        )
-        # The engine is async: POST returns pending/processing and finishes in
-        # its own background. Wait for the real terminal outcome before deciding
-        # ready vs failed (POST's transient status is not the result).
-        if doc.get("status") in extractor.PENDING_STATES and doc.get("document_id"):
-            doc = await extractor.wait_until_done(ctx, doc["document_id"])
-    except Exception as e:  # noqa: BLE001 - record the failure, don't raise into the batch
-        return await set_fields(ctx, rec, status=FAILED, error=str(e), error_code="internal_error")
-    if doc.get("status") not in extractor.READY_STATES:
+async def _apply_engine_status(ctx, rec: dict, doc: dict) -> dict:
+    """Map an engine DocumentOut onto our record's state. Shared by the upload
+    path (ingest_now) and the lazy reconciler (reconcile_pending)."""
+    status = doc.get("status")
+    if status in extractor.READY_STATES:
         return await set_fields(
-            ctx, rec, status=FAILED,
-            error=doc.get("error") or "could not process this file",
-            error_code=doc.get("error_code"),
+            ctx, rec, status=READY, document_id=doc.get("document_id"),
+            chunk_count=doc.get("chunk_count") or 0, error=doc.get("error"),
+            error_code=doc.get("error_code"), expires_at=_to_epoch(doc.get("expires_at")),
         )
+    if status in extractor.PENDING_STATES:
+        return await set_fields(ctx, rec, status=INDEXING, document_id=doc.get("document_id"))
     return await set_fields(
-        ctx, rec, status=READY, document_id=doc.get("document_id"),
-        chunk_count=doc.get("chunk_count") or 0, error=doc.get("error"),
-        error_code=doc.get("error_code"), expires_at=_to_epoch(doc.get("expires_at")),
+        ctx, rec, status=FAILED, document_id=doc.get("document_id"),
+        error=doc.get("error") or "could not process this file", error_code=doc.get("error_code"),
     )
 
 
-async def ingest_many(ctx, items: list[tuple[dict, bytes]], concurrency: int = 4) -> dict:
-    """Ingest several (record, content) pairs in PARALLEL, bounded by
-    `concurrency`. One bad file never stops the batch. This is the body of
-    the background job kicked from receive_files."""
-    sem = asyncio.Semaphore(concurrency)
+async def ingest_now(ctx, filename: str, mime_type: str | None, content: bytes,
+                     content_hash: str | None = None) -> dict:
+    """Create the record and hand the bytes to the engine in ONE synchronous
+    step, returning with the engine's immediate status. NO polling and NO
+    background task: a spawned coroutine does NOT survive the handler return on
+    this platform — a background poll gets cancelled and the record freezes
+    (the 2026-07-05 stuck-in-indexing bug). The engine stages the upload and
+    returns at once; its own durable drain loop finishes extraction+embedding,
+    and reconcile_pending() pulls that outcome into our record on the next read.
+    `content` never outlives this call — it is never stored."""
+    rec = await create_pending(ctx, filename, mime_type, len(content), content_hash=content_hash)
+    try:
+        doc = await extractor.ingest(ctx, filename=filename, content=content, mime_type=mime_type)
+    except Exception as e:  # noqa: BLE001 - record the failure, keep the record
+        return await set_fields(ctx, rec, status=FAILED, error=str(e), error_code="internal_error")
+    return await _apply_engine_status(ctx, rec, doc)
 
-    async def _one(rec, content) -> bool:
-        async with sem:
-            result = await ingest_one(ctx, rec, content)
-            return result.get("status") == READY
 
-    results = await asyncio.gather(*(_one(rec, content) for rec, content in items))
-    ok = sum(1 for r in results if r)
-    return {"ingested": ok, "failed": len(results) - ok}
+async def reconcile_pending(ctx) -> None:
+    """Bring every non-terminal record in line with the engine (the source of
+    truth) — called at the top of the read paths (panel, list, read, overview,
+    search). We run no background worker; the engine's durable drain loop always
+    finishes a job, and this pulls the result into our record lazily. Best-effort:
+    an engine hiccup leaves a record unchanged (a later read retries)."""
+    for rec in await all_files(ctx):
+        if rec.get("status") not in (PENDING, INDEXING):
+            continue
+        doc_id = rec.get("document_id")
+        if not doc_id:
+            # No engine doc exists (an interrupted upload that never POSTed). It
+            # cannot resolve on its own — fail it once stale so it can be re-uploaded.
+            if _now() - float(rec.get("uploaded_at") or 0) > STALE_PENDING_S:
+                await set_fields(ctx, rec, status=FAILED,
+                                 error="upload was interrupted — please re-upload it",
+                                 error_code="internal_error")
+            continue
+        try:
+            doc = await extractor.overview(ctx, doc_id)
+        except Exception as e:  # noqa: BLE001
+            if "404" in str(e):
+                await mark_expired_if_gone(ctx, rec)
+            continue
+        await _apply_engine_status(ctx, rec, doc)
 
 
 # ── Read-path resolution ───────────────────────────────────────────────────────
