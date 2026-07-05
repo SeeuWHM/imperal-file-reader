@@ -12,6 +12,7 @@ background task so the upload returns immediately.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 
 from imperal_sdk.chat.action_result import ActionResult
@@ -98,7 +99,6 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
     received: list[dict] = []
     rejected: list[dict] = []
     decoded: list[tuple[str, str | None, bytes]] = []
-    total_bytes = 0
 
     for raw in (params.files or []):
         try:
@@ -117,7 +117,6 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
             rejected.append({"filename": fn, "reason": f"exceeds the {mb} MB per-file limit"})
             continue
         decoded.append((fn, mime, content))
-        total_bytes += len(content)
 
     if not decoded:
         # DIAGNOSTIC (temporary): the on_upload payload shape is undocumented and
@@ -130,14 +129,37 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
             summary=f"No files were accepted (diagnostic). Payload shape → {shapes}",
         )
 
+    # Idempotency: the engine is content-addressed by sha256, so a re-upload or
+    # a re-fired on_upload (e.g. panel refresh) must NOT create a duplicate
+    # record. Dedup by content hash within this batch AND against records we
+    # already hold (see the duplicate-panel-entries bug, 2026-07-05).
+    held = await lifecycle.active_hashes(ctx)
+    fresh: list[tuple[str, str | None, bytes, str]] = []
+    seen: set[str] = set()
+    already = 0
+    for fn, mime, content in decoded:
+        h = hashlib.sha256(content).hexdigest()
+        if h in seen or h in held:
+            already += 1
+            continue
+        seen.add(h)
+        fresh.append((fn, mime, content, h))
+
+    if not fresh:
+        return ActionResult.success(
+            data=build_receive_result([], rejected),
+            summary=f"Already have {already} file(s) — nothing new to index."
+                    + (f" {len(rejected)} rejected." if rejected else ""),
+        )
+
     try:
-        await lifecycle.check_quota(ctx, len(decoded), total_bytes)
+        await lifecycle.check_quota(ctx, len(fresh), sum(len(c) for _, _, c, _ in fresh))
     except Exception as e:  # noqa: BLE001 — quota is a user-facing, non-retryable decision
         return ActionResult.error(str(e), retryable=False)
 
     to_ingest: list[tuple[dict, bytes]] = []
-    for fn, mime, content in decoded:
-        rec = await lifecycle.create_pending(ctx, fn, mime, len(content))
+    for fn, mime, content, h in fresh:
+        rec = await lifecycle.create_pending(ctx, fn, mime, len(content), content_hash=h)
         received.append({"file_id": rec["file_id"], "filename": fn,
                          "size_bytes": len(content), "status": "queued"})
         to_ingest.append((rec, content))
@@ -149,6 +171,8 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
         await lifecycle.ingest_many(ctx, to_ingest)
 
     summary = f"{len(received)} file(s) received and indexing"
+    if already:
+        summary += f", {already} already present"
     if rejected:
         summary += f", {len(rejected)} rejected"
     return ActionResult.success(data=build_receive_result(received, rejected), summary=summary + ".")

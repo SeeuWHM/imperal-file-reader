@@ -131,12 +131,25 @@ async def check_quota(ctx, adding: int, adding_bytes: int) -> None:
 # ── Creation + ingest (heavy path — background) ───────────────────────────────
 
 
-async def create_pending(ctx, filename: str, mime_type: str | None, size_bytes: int) -> dict:
+async def active_hashes(ctx) -> set[str]:
+    """Content hashes (sha256) we already hold in a non-failed/non-expired
+    state. Used to make uploads idempotent: the engine is content-addressed by
+    sha256, so a re-upload / re-fired on_upload must reuse the existing record
+    instead of creating a duplicate panel entry."""
+    return {
+        f["content_hash"] for f in await all_files(ctx)
+        if f.get("content_hash") and f.get("status") in (PENDING, INDEXING, READY)
+    }
+
+
+async def create_pending(ctx, filename: str, mime_type: str | None, size_bytes: int,
+                         content_hash: str | None = None) -> dict:
     """Create the record BEFORE the engine call — so the file is visible
     (as 'pending') to list_files/skeleton immediately, even before the
     background job has run."""
     created = await ctx.store.create(FILES_COLLECTION, {
         "filename": filename, "mime_type": mime_type, "size_bytes": size_bytes,
+        "content_hash": content_hash,
         "status": PENDING, "document_id": None, "chunk_count": 0,
         "error": None, "error_code": None,
         "uploaded_at": _now(), "expires_at": None,
