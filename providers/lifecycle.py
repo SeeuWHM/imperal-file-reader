@@ -157,6 +157,11 @@ async def ingest_one(ctx, rec: dict, content: bytes) -> dict:
             ctx, filename=rec.get("filename") or "file", content=content,
             mime_type=rec.get("mime_type"),
         )
+        # The engine is async: POST returns pending/processing and finishes in
+        # its own background. Wait for the real terminal outcome before deciding
+        # ready vs failed (POST's transient status is not the result).
+        if doc.get("status") in extractor.PENDING_STATES and doc.get("document_id"):
+            doc = await extractor.wait_until_done(ctx, doc["document_id"])
     except Exception as e:  # noqa: BLE001 - record the failure, don't raise into the batch
         return await set_fields(ctx, rec, status=FAILED, error=str(e), error_code="internal_error")
     if doc.get("status") not in extractor.READY_STATES:

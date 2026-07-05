@@ -14,6 +14,7 @@ second look — they were never kept).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .helpers import DOC_EXTRACTOR_URL, SOURCE
@@ -25,6 +26,12 @@ _SEARCH_URL = f"{DOC_EXTRACTOR_URL}/v1/search"
 
 # Engine statuses that mean "content is available to read/search".
 READY_STATES = ("processed", "cached")
+# Engine statuses that are still in-flight: POST /v1/documents returns
+# immediately with status=pending and the engine finishes extraction+embedding
+# in ITS OWN background (v1.6.0 async redesign, 2026-07-04). The caller must
+# poll until the status leaves this set — the POST's transient status is NOT
+# the real outcome.
+PENDING_STATES = ("pending", "processing")
 
 
 def imperal_id(ctx) -> str:
@@ -72,6 +79,21 @@ async def ingest(ctx, *, filename: str, content: bytes, mime_type: str | None = 
     if not docs:
         raise RuntimeError("engine returned no document")
     return docs[0]
+
+
+async def wait_until_done(ctx, document_id: int, *, max_wait: float = 300.0, interval: float = 1.0) -> dict:
+    """Poll the engine after an async ingest until the document reaches a
+    terminal status (processed/cached/failed/unsupported) or `max_wait`
+    elapses. The engine finishes extraction+embedding in its own background
+    after POST returns (see PENDING_STATES) — this waits for the real outcome.
+    Returns the final DocumentOut dict (or the last seen one on timeout)."""
+    doc = await overview(ctx, document_id)
+    waited = 0.0
+    while doc.get("status") in PENDING_STATES and waited < max_wait:
+        await asyncio.sleep(interval)
+        waited += interval
+        doc = await overview(ctx, document_id)
+    return doc
 
 
 async def read_text(ctx, document_id: int, offset: int = 0, limit: int = 40_000) -> dict:
