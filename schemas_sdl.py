@@ -173,4 +173,6 @@ def build_search_results(data: dict) -> SearchResults:
                   snippet=r.get("text", ""), score=r.get("score"))
         for i, r in enumerate(data.get("results", []))
     ]
-    return SearchResults(items=items, total=len(items), query=data.get("query"), mode=data.get("mode"))
+    total = data.get("total_matches", len(items))
+    return SearchResults(items=items, total=total, has_more=len(items) < total,
+                         query=data.get("query"), mode=data.get("mode"))

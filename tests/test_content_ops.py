@@ -60,20 +60,35 @@ async def test_read_files_batch_one_bad_file_does_not_fail_the_others(make_ctx, 
     assert by_id[bad["file_id"]]["status"] == "error"
 
 
-async def test_read_files_multi_file_uses_smaller_preview_window(make_ctx, resp):
+async def test_read_files_multi_file_splits_budget_across_files(make_ctx, resp):
+    expected = content_ops._budget_share(2, content_ops._MIN_PER_FILE)
     ctx = make_ctx([
         resp(200, {"success": True, "data": {"document_id": 1, "text": "a" * 100, "offset": 0,
-                                             "limit": content_ops.MULTI_READ_LIMIT, "total_chars": 100,
+                                             "limit": expected, "total_chars": 100,
                                              "truncated": False}}),
         resp(200, {"success": True, "data": {"document_id": 2, "text": "b" * 100, "offset": 0,
-                                             "limit": content_ops.MULTI_READ_LIMIT, "total_chars": 100,
+                                             "limit": expected, "total_chars": 100,
                                              "truncated": False}}),
     ])
     r1 = await _ready_file(ctx, filename="a.txt", document_id=1)
     r2 = await _ready_file(ctx, filename="b.txt", document_id=2)
     await content_ops.read_files(ctx, [r1["file_id"], r2["file_id"]])
     for _, _, kwargs in ctx.http.calls:
-        assert kwargs["params"]["limit"] == content_ops.MULTI_READ_LIMIT
+        assert kwargs["params"]["limit"] == expected
+
+
+async def test_read_files_large_batch_never_exceeds_response_budget(make_ctx, resp):
+    n = 20
+    ctx = make_ctx([
+        resp(200, {"success": True, "data": {"document_id": i, "text": "x" * 500, "offset": 0,
+                                             "limit": 500, "total_chars": 500, "truncated": True}})
+        for i in range(n)
+    ])
+    recs = [await _ready_file(ctx, filename=f"f{i}.txt", document_id=i) for i in range(n)]
+    await content_ops.read_files(ctx, [r["file_id"] for r in recs])
+    for _, _, kwargs in ctx.http.calls:
+        assert kwargs["params"]["limit"] <= content_ops._budget_share(n, content_ops._MIN_PER_FILE)
+    assert sum(kwargs["params"]["limit"] for _, _, kwargs in ctx.http.calls) <= content_ops.RESPONSE_BUDGET_CHARS
 
 
 # ── file_overview ─────────────────────────────────────────────────────────────

@@ -20,21 +20,55 @@ import asyncio
 from . import extractor, lifecycle
 from .text_windows import grep_lines
 
-DEFAULT_READ_LIMIT = 40_000    # chars for a single-file read window
-MULTI_READ_LIMIT = 4_000       # per-file window when reading several at once (gist, token-safe)
-MAX_READ_LIMIT = 200_000       # hard ceiling per file
+# Kernel ceiling (verified 2026-07-06): Webby's agentic tool loop serializes
+# a whole tool result to one string and hard-cuts it at ~10_000 chars, mid-JSON,
+# with no awareness of fields or list items (orchestration/agentic/loop.py,
+# _tool_result_content_str / _TOOL_RESULT_MAX). A response that lands right at
+# that edge comes through corrupted, not just short — Webby then can't trust
+# ANY of it. We stay comfortably under it ourselves so a big ask degrades to
+# smaller-but-honest (has_more=True / [N chars total]) instead of broken.
+RESPONSE_BUDGET_CHARS = 8_000
+_MIN_PER_FILE = 250             # floor per file when read_files batches many at once
+_MIN_PER_HIT = 200              # floor per search hit when there are many
+
+DEFAULT_READ_LIMIT = RESPONSE_BUDGET_CHARS   # chars for a single-file read window
+MAX_READ_LIMIT = RESPONSE_BUDGET_CHARS       # hard ceiling per file even on an explicit ask —
+                                              # nothing bigger survives the kernel intact anyway
 FULLTEXT_LIMIT = 5_000_000     # engine cap for exact in-file grep
 DEFAULT_SEARCH_K = 6
 MAX_SEARCH_K = 20
 _CONCURRENCY = 5               # parallel engine calls per bulk op (self-throttle)
 
 
+def _budget_share(n: int, floor: int) -> int:
+    """Split RESPONSE_BUDGET_CHARS across n items, never below floor."""
+    return max(floor, RESPONSE_BUDGET_CHARS // max(1, n))
+
+
+def _fit_text_budget(items: list[dict], text_key: str, floor: int) -> tuple[list[dict], int]:
+    """Cap item count and per-item text so the total stays within
+    RESPONSE_BUDGET_CHARS. Returns (possibly-shortened items, original count)
+    so the caller can report has_more honestly instead of silently dropping."""
+    total = len(items)
+    max_items = max(1, RESPONSE_BUDGET_CHARS // floor)
+    kept = items[:max_items]
+    per = _budget_share(len(kept), floor)
+    for it in kept:
+        text = it.get(text_key) or ""
+        if len(text) > per:
+            it[text_key] = text[:per] + f"… [{len(text)} chars total]"
+    return kept, total
+
+
 async def read_files(ctx, file_ids: list[str], offset: int = 0, limit: int | None = None) -> list[dict]:
-    """Read 1..N files in parallel. One id → full window; many → a bounded
-    preview each (token-safe). Each result carries status ok|preparing|error
-    — a not-ready, failed, or expired file never fails the others."""
+    """Read 1..N files in parallel. One id → a budget-sized window; many →
+    RESPONSE_BUDGET_CHARS split across them. Each result carries status
+    ok|preparing|error — a not-ready, failed, or expired file never fails the
+    others. A smaller window just means more of it reports has_more=True —
+    never missing content."""
     multi = len(file_ids) > 1
-    per = max(1, min(limit or (MULTI_READ_LIMIT if multi else DEFAULT_READ_LIMIT), MAX_READ_LIMIT))
+    cap = _budget_share(len(file_ids), _MIN_PER_FILE) if multi else MAX_READ_LIMIT
+    per = max(1, min(limit or cap, cap))
     sem = asyncio.Semaphore(_CONCURRENCY)
 
     async def _one(fid: str) -> dict:
@@ -90,7 +124,9 @@ async def file_overview(ctx, file_ids: list[str]) -> list[dict]:
                     pass
             return out
 
-    return await asyncio.gather(*(_one(f) for f in file_ids))
+    results = await asyncio.gather(*(_one(f) for f in file_ids))
+    trimmed, _ = _fit_text_budget(list(results), "preview", _MIN_PER_HIT)
+    return trimmed
 
 
 async def search_files(ctx, query: str, file_ids: list[str] | None = None, k: int | None = None) -> dict:
@@ -116,10 +152,12 @@ async def search_files(ctx, query: str, file_ids: list[str] | None = None, k: in
 
         groups = await asyncio.gather(*(_one(f) for f in file_ids))
         results = [hit for g in groups for hit in g]
-        return {"query": query, "mode": "exact", "results": results}
+        trimmed, total = _fit_text_budget(results, "text", _MIN_PER_HIT)
+        return {"query": query, "mode": "exact", "results": trimmed, "total_matches": total}
 
     kk = max(1, min(k or DEFAULT_SEARCH_K, MAX_SEARCH_K))
     hits = await extractor.search(ctx, query, k=kk)
     results = [{"label": f"{h.get('filename') or '?'}#{h.get('seq')}",
                 "text": h.get("text", ""), "score": h.get("score")} for h in hits]
-    return {"query": query, "mode": "semantic", "results": results}
+    trimmed, total = _fit_text_budget(results, "text", _MIN_PER_HIT)
+    return {"query": query, "mode": "semantic", "results": trimmed, "total_matches": total}
