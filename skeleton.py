@@ -32,5 +32,8 @@ async def skeleton_file_reader(ctx) -> dict:
         "files_ready": ready,
         "files_processing": processing,
         "files_failed": failed,
-        "recent_files": [f.get("filename") or "?" for f in files[:5]],
+        "recent_files": [
+            {"file_id": f.get("file_id"), "filename": f.get("filename") or "?", "status": f.get("status")}
+            for f in files[:5]
+        ],
     }}
