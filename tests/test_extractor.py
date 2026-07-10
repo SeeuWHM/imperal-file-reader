@@ -88,7 +88,7 @@ async def test_read_text_logs_payload_shape(make_ctx, resp):
         (
             "doc_extractor.read_text document_id=%s payload=%s",
             1,
-            '{"chunk_count": 3, "document_id": 1, "image_ai_used": false, "is_inferred": false, "limit": 40000, "ocr_used": false, "offset": 0, "stage": "done", "status": "processed", "text_len": 11, "total_chars": 11, "truncated": false}',
+            '{"chunk_count": 3, "document_id": 1, "image_ai_used": false, "limit": 40000, "ocr_used": false, "offset": 0, "stage": "done", "status": "processed", "text_len": 11, "total_chars": 11, "truncated": false}',
         )
     ]
 
@@ -137,7 +137,6 @@ async def test_classify_extraction_returns_truth_without_guessing():
         "extraction_method": None,
         "image_ai_used": False,
         "ocr_used": False,
-        "is_inferred": False,
         "is_partial": False,
         "text_quality": None,
         "noise_score": None,
@@ -146,7 +145,6 @@ async def test_classify_extraction_returns_truth_without_guessing():
         "extraction_method": "ai_vision",
         "image_ai_used": True,
         "ocr_used": False,
-        "is_inferred": False,
         "is_partial": False,
         "text_quality": None,
         "noise_score": None,
@@ -155,7 +153,6 @@ async def test_classify_extraction_returns_truth_without_guessing():
         "extraction_method": "ocr",
         "image_ai_used": False,
         "ocr_used": True,
-        "is_inferred": False,
         "is_partial": False,
         "text_quality": None,
         "noise_score": None,
@@ -164,7 +161,6 @@ async def test_classify_extraction_returns_truth_without_guessing():
         "extraction_method": None,
         "image_ai_used": True,
         "ocr_used": False,
-        "is_inferred": False,
         "is_partial": False,
         "text_quality": None,
         "noise_score": None,
@@ -174,7 +170,6 @@ async def test_classify_extraction_returns_truth_without_guessing():
         "extraction_method": "ocr",
         "image_ai_used": False,
         "ocr_used": True,
-        "is_inferred": False,
         "is_partial": True,
         "text_quality": 0.8,
         "noise_score": 0.2,
@@ -188,7 +183,7 @@ async def test_diagnostic_payload_includes_backend_extraction_truth_without_text
         "image_ai_used": True,
         "ocr_used": False,
     })
-    assert payload == '{"document_id": 5, "extraction_method": "ai_vision", "image_ai_used": true, "is_inferred": false, "ocr_used": false}'
+    assert payload == '{"document_id": 5, "extraction_method": "ai_vision", "image_ai_used": true, "ocr_used": false}'
 
 
 async def test_ingest_sends_bearer_when_token_configured(make_ctx, resp, monkeypatch):

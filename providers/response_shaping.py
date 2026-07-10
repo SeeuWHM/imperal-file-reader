@@ -10,14 +10,20 @@ from __future__ import annotations
 
 from . import extractor
 
-# Kernel ceiling (verified 2026-07-06): Webby's agentic tool loop serializes
-# a whole tool result to one string and hard-cuts it at ~10_000 chars, mid-JSON,
-# with no awareness of fields or list items (orchestration/agentic/loop.py,
-# _tool_result_content_str / _TOOL_RESULT_MAX). A response that lands right at
-# that edge comes through corrupted, not just short — Webby then can't trust
-# ANY of it. We stay comfortably under it ourselves so a big ask degrades to
-# smaller-but-honest (has_more=True / [N chars total]) instead of broken.
-RESPONSE_BUDGET_CHARS = 8_000
+# Kernel ceiling (verified 2026-07-06, RE-CONFIRMED LIVE 2026-07-10): Webby's
+# agentic tool loop serializes a whole tool result to one string and hard-cuts
+# it at ~10_000 chars, mid-JSON, with no awareness of fields or list items
+# (orchestration/agentic/loop.py, _tool_result_content_str / _TOOL_RESULT_MAX).
+# A response landing near that edge arrives corrupted, not just short — Webby
+# then can't trust ANY of it. Live proof 2026-07-10: extractor.read_text's own
+# log confirmed the engine returned a full text_len=8000 payload for a real
+# read, but Webby reported an empty body 17s later — the previous 8_000 budget
+# was NOT leaving enough room once this module's own extraction-truth/quality
+# fields (extraction_method, image_ai_used, ocr_used, is_partial, text_quality,
+# noise_score — ~200-400 chars of wrapper per item) are added on top of the
+# text itself. Cut hard to 4_000 for real headroom instead of nibbling at the
+# edge again.
+RESPONSE_BUDGET_CHARS = 4_000
 _MIN_PER_FILE = 250             # floor per file when read_files batches many at once
 _MIN_PER_HIT = 200              # floor per search hit when there are many
 
@@ -38,7 +44,7 @@ def attach_extraction_truth(payload: dict, meta: dict | None) -> dict:
     mime-based guesses.
     """
     truth = extractor.classify_extraction(meta)
-    for key in ("extraction_method", "image_ai_used", "ocr_used", "is_inferred",
+    for key in ("extraction_method", "image_ai_used", "ocr_used",
                 "is_partial", "text_quality", "noise_score"):
         payload[key] = truth.get(key)
     return payload

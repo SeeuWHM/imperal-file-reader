@@ -425,11 +425,6 @@
                 "title": "Ocr Used",
                 "type": "boolean"
               },
-              "is_inferred": {
-                "default": false,
-                "title": "Is Inferred",
-                "type": "boolean"
-              },
               "is_partial": {
                 "default": false,
                 "title": "Is Partial",
@@ -756,11 +751,6 @@
               "ocr_used": {
                 "default": false,
                 "title": "Ocr Used",
-                "type": "boolean"
-              },
-              "is_inferred": {
-                "default": false,
-                "title": "Is Inferred",
                 "type": "boolean"
               },
               "is_partial": {

@@ -28,7 +28,6 @@ async def test_file_overview_ready_file_includes_preview(make_ctx, resp):
     assert results[0]["extraction_method"] == "text"
     assert results[0]["image_ai_used"] is False
     assert results[0]["ocr_used"] is False
-    assert results[0]["is_inferred"] is False
 
 
 async def test_file_overview_pending_file_has_no_preview_and_no_engine_call(make_ctx):

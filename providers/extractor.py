@@ -39,7 +39,7 @@ def _diagnostic_payload(data: dict | None) -> str:
     if isinstance(preview, str):
         snap["preview_len"] = len(preview)
     truth = classify_extraction(data)
-    for k in ("extraction_method", "image_ai_used", "ocr_used", "is_inferred"):
+    for k in ("extraction_method", "image_ai_used", "ocr_used"):
         if truth.get(k) is not None:
             snap[k] = truth.get(k)
     return json.dumps(snap, ensure_ascii=False, sort_keys=True)
@@ -82,7 +82,6 @@ def classify_extraction(data: dict | None) -> dict:
             "extraction_method": None,
             "image_ai_used": False,
             "ocr_used": False,
-            "is_inferred": False,
             "is_partial": False,
             "text_quality": None,
             "noise_score": None,
@@ -98,7 +97,6 @@ def classify_extraction(data: dict | None) -> dict:
         "extraction_method": method,
         "image_ai_used": bool(image_ai_used),
         "ocr_used": bool(ocr_used),
-        "is_inferred": False,
         "is_partial": bool(data.get("is_partial")),
         "text_quality": data.get("text_quality"),
         "noise_score": data.get("noise_score"),

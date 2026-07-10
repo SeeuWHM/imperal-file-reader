@@ -74,7 +74,6 @@ class FileText(sdl.Entity, sdl.Bodied):
     extraction_method: str | None = None
     image_ai_used: bool = False
     ocr_used: bool = False
-    is_inferred: bool = False
     is_partial: bool = False
     text_quality: float | None = None
     noise_score: float | None = None
@@ -104,7 +103,6 @@ class FileOverview(sdl.Entity, sdl.Excerptable):
     extraction_method: str | None = None
     image_ai_used: bool = False
     ocr_used: bool = False
-    is_inferred: bool = False
     is_partial: bool = False
     text_quality: float | None = None
     noise_score: float | None = None
@@ -193,7 +191,6 @@ def build_file_text(data: dict) -> FileText:
         extraction_method=data.get("extraction_method"),
         image_ai_used=bool(data.get("image_ai_used")),
         ocr_used=bool(data.get("ocr_used")),
-        is_inferred=bool(data.get("is_inferred")),
         is_partial=bool(data.get("is_partial")),
         text_quality=data.get("text_quality"),
         noise_score=data.get("noise_score"),
@@ -216,7 +213,6 @@ def build_file_overview(data: dict) -> FileOverview:
         extraction_method=data.get("extraction_method"),
         image_ai_used=bool(data.get("image_ai_used")),
         ocr_used=bool(data.get("ocr_used")),
-        is_inferred=bool(data.get("is_inferred")),
         is_partial=bool(data.get("is_partial")),
         text_quality=data.get("text_quality"),
         noise_score=data.get("noise_score"),
