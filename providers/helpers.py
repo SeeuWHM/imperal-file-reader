@@ -1,6 +1,8 @@
 """Shared constants for the File Reader provider layer."""
 from __future__ import annotations
 
+import os
+
 FILES_COLLECTION = "filereader_files"
 
 # Public route — this extension runs on whm-ai-worker; the engine
@@ -8,6 +10,10 @@ FILES_COLLECTION = "filereader_files"
 # nginx-proxied public path (same pattern as web-tools' WEB_TOOLS_API_URL and
 # Google Drive Connector's DOC_EXTRACTOR_URL).
 DOC_EXTRACTOR_URL = "https://api.webhostmost.com/doc-extractor"
+
+# Optional bearer token for the extractor API. When unset, the client sends no
+# Authorization header so legacy no-auth deployments keep working.
+DOC_EXTRACTOR_TOKEN = (os.getenv("DOC_EXTRACTOR_TOKEN") or "").strip()
 
 # Hard-partitions this extension's documents/chunks from Google Drive
 # Connector's inside the shared engine — see whm-doc-extractor-api's

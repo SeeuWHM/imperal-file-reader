@@ -4,7 +4,7 @@
   "app_id": "file-reader",
   "version": "0.1.0",
   "name": "File Reader",
-  "description": "Upload files (PDF, Office, text, CSV, images/scans via OCR, and more) and Webby reads and semantically searches their contents. Nothing is stored but the extracted text — your raw files are never kept.",
+  "description": "Upload files (PDF, Office, text, CSV, images, scans, and more) and Webby reads and semantically searches their contents using the extractor backend. Nothing is stored but the extracted text — your raw files are never kept.",
   "icon": "icon.svg",
   "actions_explicit": true,
   "system": false,

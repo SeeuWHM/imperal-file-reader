@@ -28,7 +28,14 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+            message = None
+            try:
+                err = (self._json or {}).get("error") or {}
+                message = err.get("message")
+            except Exception:
+                message = None
+            suffix = f": {message}" if message else ""
+            raise RuntimeError(f"HTTP {self.status_code}{suffix}")
 
 
 class FakeHttp:

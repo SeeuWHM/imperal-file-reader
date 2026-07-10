@@ -14,8 +14,8 @@ from app import chat
 from providers import content_ops, lifecycle
 from schemas import FileIdsParams, ReadFilesParams, SearchFilesParams
 from schemas_sdl import (
-    FileOverviewList, FileTextList, SearchResults,
-    build_file_overview_list, build_file_text_list, build_search_results,
+    FileOverviewList, FilePreviewList, FileTextList, SearchResults,
+    build_file_overview_list, build_file_preview_list, build_file_text_list, build_search_results,
 )
 
 log = logging.getLogger("file_reader")
@@ -26,7 +26,8 @@ log = logging.getLogger("file_reader")
     description=(
         "Read the extracted text of one or more uploaded files by file_id. Returns a windowed slice "
         "(offset/limit in characters) per file; use has_more + returned_chars to page through large files. "
-        "A file still indexing comes back as 'preparing' — ask again shortly."
+        "A file still indexing comes back as 'preparing' — ask again shortly. For a first look at a file "
+        "prefer read_file_preview instead — it is far cheaper and usually enough to tell if the file is relevant."
     ),
 )
 async def fn_read_files(ctx, params: ReadFilesParams) -> ActionResult:
@@ -35,10 +36,7 @@ async def fn_read_files(ctx, params: ReadFilesParams) -> ActionResult:
         results = await content_ops.read_files(ctx, params.file_ids, params.offset, params.limit)
     except Exception as e:  # noqa: BLE001
         return ActionResult.error(str(e), retryable=False)
-    ok = sum(1 for r in results if (r.get("status") or "ok") == "ok")
-    preparing = sum(1 for r in results if r.get("status") == "preparing")
-    summary = f"Read {ok}/{len(results)} file(s)" + (f", {preparing} still preparing" if preparing else "") + "."
-    return ActionResult.success(data=build_file_text_list(results), summary=summary)
+    return ActionResult.success(data=build_file_text_list(results), summary="OK.")
 
 
 @chat.function(
@@ -54,7 +52,25 @@ async def fn_file_overview(ctx, params: FileIdsParams) -> ActionResult:
         results = await content_ops.file_overview(ctx, params.file_ids)
     except Exception as e:  # noqa: BLE001
         return ActionResult.error(str(e), retryable=False)
-    return ActionResult.success(data=build_file_overview_list(results), summary=f"{len(results)} file(s).")
+    return ActionResult.success(data=build_file_overview_list(results), summary="OK.")
+
+
+@chat.function(
+    "read_file_preview", action_type="read", data_model=FilePreviewList,
+    description=(
+        "Token-cheap preview of one or more uploaded files by file_id: the opening of the extracted text plus, "
+        "for longer files, a second real excerpt from further in — not a summary, just two honest samples — "
+        "along with extraction quality (text_quality, noise_score, is_partial, extraction_method). Use this BEFORE "
+        "read_files to decide whether a file is relevant and worth a full read."
+    ),
+)
+async def fn_read_file_preview(ctx, params: FileIdsParams) -> ActionResult:
+    await lifecycle.reconcile_pending(ctx)
+    try:
+        results = await content_ops.file_preview(ctx, params.file_ids)
+    except Exception as e:  # noqa: BLE001
+        return ActionResult.error(str(e), retryable=False)
+    return ActionResult.success(data=build_file_preview_list(results), summary=f"{len(results)} file(s) previewed.")
 
 
 @chat.function(

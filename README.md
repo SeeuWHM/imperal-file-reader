@@ -2,8 +2,10 @@
 
 Upload files in the panel and Webby reads and semantically searches their
 contents. Supports PDF, Office (docx/xlsx/pptx), plain text, CSV, HTML, and
-images/scans via OCR. **Nothing is stored but the extracted text — your raw
-files are never kept.**
+images/scans through the extractor backend. Image-reading policy is backend-owned:
+this extension does not guess whether a picture was handled by AI vision or OCR — it only reports
+what the backend actually returned. **Nothing is stored but the extracted text — your raw files are
+never kept.**
 
 - **Developer:** SeeU · **SDK:** imperal-sdk 5.9.x · **Platform:** panel.imperal.io
 - **App id:** `file-reader`

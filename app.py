@@ -4,8 +4,8 @@ The user drops files in the panel → the engine (whm-doc-extractor-api) extract
 their text → Webby reads and semantically searches them by file_id. Raw bytes
 are NEVER persisted anywhere in this extension: they live only in the
 background ingest coroutine's memory, between receipt and the single engine
-call. The engine is reached over the nginx IP-allowlisted public path — no
-token (see providers/helpers.py DOC_EXTRACTOR_URL).
+call. The engine is reached over the nginx-proxied public path; bearer auth is
+optional via DOC_EXTRACTOR_TOKEN (see providers/helpers.py).
 
 Simpler than the Google Drive Connector: no OAuth, no app secrets, no Picker —
 the file_id IS the ctx.store record id, the only identifier any tool uses.
@@ -24,9 +24,11 @@ ext = Extension(
     version="0.1.0",
     display_name="File Reader",
     description=(
-        "Upload files (PDF, Office, text, CSV, images/scans via OCR, and more) and Webby "
-        "reads and semantically searches their contents. Nothing is stored but the extracted "
-        "text — your raw files are never kept."
+        "Upload files (PDF, Office, text, CSV, images, scans, and more) and Webby "
+        "reads and semantically searches their contents using the extractor backend. "
+        "Image-reading policy is owned by the backend; the extension reports whatever "
+        "method the backend actually used. Nothing is stored but the extracted text — "
+        "your raw files are never kept."
     ),
     icon="icon.svg",
     actions_explicit=True,

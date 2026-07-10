@@ -70,6 +70,16 @@ class FileText(sdl.Entity, sdl.Bodied):
     returned_chars: int = 0
     total_chars: int = 0
     has_more: bool = False
+    extraction_method: str | None = None
+    image_ai_used: bool = False
+    ocr_used: bool = False
+    is_inferred: bool = False
+    is_partial: bool = False
+    text_quality: float | None = None
+    noise_score: float | None = None
+    warning: str | None = None
+    message: str | None = None
+    diagnosis_json: str | None = None
 
 
 class SearchHit(sdl.Entity):
@@ -90,6 +100,33 @@ class FileOverview(sdl.Entity, sdl.Excerptable):
     mime_type: str | None = None
     size_bytes: int | None = None
     status: str | None = None
+    extraction_method: str | None = None
+    image_ai_used: bool = False
+    ocr_used: bool = False
+    is_inferred: bool = False
+    is_partial: bool = False
+    text_quality: float | None = None
+    noise_score: float | None = None
+
+
+class FilePreview(sdl.Entity, sdl.Excerptable):
+    """Token-cheap preview: real excerpts (opening +, for longer files, a
+    sample from further in) — never a fabricated summary or invented section
+    titles. `excerpt` (from Excerptable) mirrors the opening excerpt for
+    surfaces that only render a single short field."""
+    kind: str = "file_preview"
+    file_id: str | None = None
+    mime_type: str | None = None
+    status: str | None = None
+    total_chars: int | None = None
+    excerpts: list[dict] = Field(default_factory=list)
+    extraction_method: str | None = None
+    image_ai_used: bool = False
+    ocr_used: bool = False
+    is_partial: bool = False
+    text_quality: float | None = None
+    noise_score: float | None = None
+    message: str | None = None
 
 
 class FileTextList(sdl.EntityList[FileText]):
@@ -97,6 +134,10 @@ class FileTextList(sdl.EntityList[FileText]):
 
 
 class FileOverviewList(sdl.EntityList[FileOverview]):
+    pass
+
+
+class FilePreviewList(sdl.EntityList[FilePreview]):
     pass
 
 
@@ -143,10 +184,22 @@ def build_file_text(data: dict) -> FileText:
     else:
         body = data.get("text", "")
     title = (data.get("filename") or str(fid)) + (f" (from char {off})" if status == "ok" else f" [{status}]")
+    diagnosis = data.get("diagnosis")
     return FileText(
         id=str(fid), title=title, body=body, body_format="plain",
         file_id=fid, offset=off, returned_chars=data.get("returned_chars", 0),
         total_chars=data.get("total_chars", 0), has_more=bool(data.get("has_more")),
+        extraction_method=data.get("extraction_method"),
+        image_ai_used=bool(data.get("image_ai_used")),
+        ocr_used=bool(data.get("ocr_used")),
+        is_inferred=bool(data.get("is_inferred")),
+        is_partial=bool(data.get("is_partial")),
+        text_quality=data.get("text_quality"),
+        noise_score=data.get("noise_score"),
+        warning=data.get("warning"),
+        message=data.get("message"),
+        diagnosis_json=(__import__("json").dumps(diagnosis, ensure_ascii=False, sort_keys=True)
+                        if isinstance(diagnosis, dict) else None),
     )
 
 
@@ -159,11 +212,38 @@ def build_file_overview(data: dict) -> FileOverview:
         id=str(data.get("file_id")), title=data.get("filename") or str(data.get("file_id")),
         excerpt=data.get("preview"), file_id=data.get("file_id"),
         mime_type=data.get("mime_type"), size_bytes=data.get("size_bytes"), status=data.get("status"),
+        extraction_method=data.get("extraction_method"),
+        image_ai_used=bool(data.get("image_ai_used")),
+        ocr_used=bool(data.get("ocr_used")),
+        is_inferred=bool(data.get("is_inferred")),
+        is_partial=bool(data.get("is_partial")),
+        text_quality=data.get("text_quality"),
+        noise_score=data.get("noise_score"),
     )
 
 
 def build_file_overview_list(results: list[dict]) -> FileOverviewList:
     return FileOverviewList(items=[build_file_overview(r) for r in results], total=len(results))
+
+
+def build_file_preview(data: dict) -> FilePreview:
+    fid = data.get("file_id")
+    excerpts = data.get("excerpts") or []
+    opening = next((e["text"] for e in excerpts if e.get("label") == "opening"), None)
+    return FilePreview(
+        id=str(fid), title=data.get("filename") or str(fid), excerpt=opening,
+        file_id=fid, mime_type=data.get("mime_type"), status=data.get("status"),
+        total_chars=data.get("total_chars"), excerpts=excerpts,
+        extraction_method=data.get("extraction_method"),
+        image_ai_used=bool(data.get("image_ai_used")), ocr_used=bool(data.get("ocr_used")),
+        is_partial=bool(data.get("is_partial")),
+        text_quality=data.get("text_quality"), noise_score=data.get("noise_score"),
+        message=data.get("message"),
+    )
+
+
+def build_file_preview_list(results: list[dict]) -> FilePreviewList:
+    return FilePreviewList(items=[build_file_preview(r) for r in results], total=len(results))
 
 
 def build_search_results(data: dict) -> SearchResults:
