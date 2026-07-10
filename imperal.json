@@ -1,6 +1,6 @@
 {
   "manifest_schema_version": 3,
-  "sdk_version": "5.9.2",
+  "sdk_version": "5.9.3",
   "app_id": "file-reader",
   "version": "0.1.0",
   "name": "File Reader",
@@ -218,7 +218,7 @@
     },
     {
       "name": "read_files",
-      "description": "Read the extracted text of one or more uploaded files by file_id. Returns a windowed slice (offset/limit in characters) per file; use has_more + returned_chars to page through large files. A file still indexing comes back as 'preparing' — ask again shortly.",
+      "description": "Read the extracted text of one or more uploaded files by file_id. Returns a windowed slice (offset/limit in characters) per file; use has_more + returned_chars to page through large files. A file still indexing comes back as 'preparing' — ask again shortly. For a first look at a file prefer read_file_preview instead — it is far cheaper and usually enough to tell if the file is relevant.",
       "action_type": "read",
       "chain_callable": true,
       "effects": [],
@@ -402,6 +402,98 @@
                 "default": false,
                 "title": "Has More",
                 "type": "boolean"
+              },
+              "extraction_method": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Extraction Method"
+              },
+              "image_ai_used": {
+                "default": false,
+                "title": "Image Ai Used",
+                "type": "boolean"
+              },
+              "ocr_used": {
+                "default": false,
+                "title": "Ocr Used",
+                "type": "boolean"
+              },
+              "is_inferred": {
+                "default": false,
+                "title": "Is Inferred",
+                "type": "boolean"
+              },
+              "is_partial": {
+                "default": false,
+                "title": "Is Partial",
+                "type": "boolean"
+              },
+              "text_quality": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Text Quality"
+              },
+              "noise_score": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Noise Score"
+              },
+              "warning": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Warning"
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Message"
+              },
+              "diagnosis_json": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Diagnosis Json"
               }
             },
             "required": [
@@ -643,6 +735,62 @@
                 ],
                 "default": null,
                 "title": "Size Bytes"
+              },
+              "extraction_method": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Extraction Method"
+              },
+              "image_ai_used": {
+                "default": false,
+                "title": "Image Ai Used",
+                "type": "boolean"
+              },
+              "ocr_used": {
+                "default": false,
+                "title": "Ocr Used",
+                "type": "boolean"
+              },
+              "is_inferred": {
+                "default": false,
+                "title": "Is Inferred",
+                "type": "boolean"
+              },
+              "is_partial": {
+                "default": false,
+                "title": "Is Partial",
+                "type": "boolean"
+              },
+              "text_quality": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Text Quality"
+              },
+              "noise_score": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Noise Score"
               }
             },
             "required": [
@@ -696,6 +844,319 @@
           "items"
         ],
         "title": "FileOverviewList",
+        "type": "object",
+        "x-sdl": "entity-list"
+      },
+      "event": "",
+      "background": false,
+      "long_running": false,
+      "scopes": [],
+      "owner_chat_tool": "tool_file_reader_chat"
+    },
+    {
+      "name": "read_file_preview",
+      "description": "Token-cheap preview of one or more uploaded files by file_id: the opening of the extracted text plus, for longer files, a second real excerpt from further in — not a summary, just two honest samples — along with extraction quality (text_quality, noise_score, is_partial, extraction_method). Use this BEFORE read_files to decide whether a file is relevant and worth a full read.",
+      "action_type": "read",
+      "chain_callable": true,
+      "effects": [],
+      "id_projection": "",
+      "params_schema": {
+        "properties": {
+          "file_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "File Ids",
+            "type": "array"
+          }
+        },
+        "title": "FileIdsParams",
+        "type": "object"
+      },
+      "return_schema": {
+        "$defs": {
+          "FilePreview": {
+            "description": "Token-cheap preview: real excerpts (opening +, for longer files, a\nsample from further in) — never a fabricated summary or invented section\ntitles. `excerpt` (from Excerptable) mirrors the opening excerpt for\nsurfaces that only render a single short field.",
+            "properties": {
+              "excerpt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Excerpt",
+                "x-sdl-role": "content.excerpt"
+              },
+              "summary": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Summary",
+                "x-sdl-role": "content.summary"
+              },
+              "word_count": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Word Count",
+                "x-sdl-role": "content.word_count"
+              },
+              "reading_time_s": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reading Time S",
+                "x-sdl-role": "content.reading_time_s"
+              },
+              "id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "title": "Id"
+              },
+              "title": {
+                "title": "Title",
+                "type": "string"
+              },
+              "kind": {
+                "default": "file_preview",
+                "title": "Kind",
+                "type": "string"
+              },
+              "subtitle": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Subtitle"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Status"
+              },
+              "url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Url"
+              },
+              "file_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "File Id"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Mime Type"
+              },
+              "total_chars": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Total Chars"
+              },
+              "excerpts": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "title": "Excerpts",
+                "type": "array"
+              },
+              "extraction_method": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Extraction Method"
+              },
+              "image_ai_used": {
+                "default": false,
+                "title": "Image Ai Used",
+                "type": "boolean"
+              },
+              "ocr_used": {
+                "default": false,
+                "title": "Ocr Used",
+                "type": "boolean"
+              },
+              "is_partial": {
+                "default": false,
+                "title": "Is Partial",
+                "type": "boolean"
+              },
+              "text_quality": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Text Quality"
+              },
+              "noise_score": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Noise Score"
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Message"
+              }
+            },
+            "required": [
+              "id",
+              "title"
+            ],
+            "title": "FilePreview",
+            "type": "object",
+            "x-sdl": "entity"
+          }
+        },
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/FilePreview"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "FilePreviewList",
         "type": "object",
         "x-sdl": "entity-list"
       },

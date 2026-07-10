@@ -6,6 +6,7 @@ schemas_sdl.py, minus Drive/OAuth/edit specifics.
 """
 from __future__ import annotations
 
+import json
 import time
 
 from pydantic import Field
@@ -198,7 +199,7 @@ def build_file_text(data: dict) -> FileText:
         noise_score=data.get("noise_score"),
         warning=data.get("warning"),
         message=data.get("message"),
-        diagnosis_json=(__import__("json").dumps(diagnosis, ensure_ascii=False, sort_keys=True)
+        diagnosis_json=(json.dumps(diagnosis, ensure_ascii=False, sort_keys=True)
                         if isinstance(diagnosis, dict) else None),
     )
 

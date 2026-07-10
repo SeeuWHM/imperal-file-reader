@@ -12,6 +12,17 @@ from __future__ import annotations
 
 import pytest
 
+from providers import lifecycle
+
+
+async def make_ready_file(ctx, filename="a.txt", document_id=1, chunk_count=1):
+    """Create a file record already in the READY state — the common setup
+    for content_ops tests that read/preview/search an indexed file."""
+    rec = await lifecycle.create_pending(ctx, filename, "text/plain", 10)
+    await lifecycle.set_fields(ctx, rec, status=lifecycle.READY, document_id=document_id,
+                               chunk_count=chunk_count)
+    return rec
+
 
 class FakeResponse:
     """Mimics the SDK HTTPResponse surface the code uses."""
