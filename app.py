@@ -21,7 +21,7 @@ log = logging.getLogger("file_reader")
 
 ext = Extension(
     "file-reader",
-    version="0.1.0",
+    version="0.2.0",
     display_name="File Reader",
     description=(
         "Upload files (PDF, Office, text, CSV, images, scans, and more) and Webby "

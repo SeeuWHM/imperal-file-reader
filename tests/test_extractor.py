@@ -186,14 +186,16 @@ async def test_diagnostic_payload_includes_backend_extraction_truth_without_text
     assert payload == '{"document_id": 5, "extraction_method": "ai_vision", "image_ai_used": true, "ocr_used": false}'
 
 
-async def test_ingest_sends_bearer_when_token_configured(make_ctx, resp, monkeypatch):
-    monkeypatch.setattr(extractor, "DOC_EXTRACTOR_TOKEN", "secret-token")
+async def test_ingest_sends_bearer_when_token_configured(make_ctx, resp):
+    # Auth now lives in the kernel's ctx.files (Rule 13) — the extension no
+    # longer holds the token. The double carries it; the bearer still reaches
+    # the engine on the wire.
     ctx = make_ctx([resp(200, {"success": True, "data": {"documents": [{
         "document_id": 3, "source": "filereader", "imperal_id": "user-123",
         "sha256": "abc", "filename": "secured.txt", "mime": "text/plain", "size_bytes": 5,
         "preview": "hello", "status": "processed", "stage": "done", "error": None,
         "error_code": None, "chunk_count": 1, "created_at": None, "expires_at": None}
-    ]}})])
+    ]}})], token="secret-token")
 
     doc = await extractor.ingest(ctx, filename="secured.txt", content=b"hello", mime_type="text/plain")
     assert doc["document_id"] == 3

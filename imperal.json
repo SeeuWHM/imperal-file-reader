@@ -1,8 +1,8 @@
 {
   "manifest_schema_version": 3,
-  "sdk_version": "5.9.3",
+  "sdk_version": "5.9.11",
   "app_id": "file-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "File Reader",
   "description": "Upload files (PDF, Office, text, CSV, images, scans, and more) and Webby reads and semantically searches their contents using the extractor backend. Nothing is stored but the extracted text — your raw files are never kept.",
   "icon": "icon.svg",
@@ -1734,7 +1734,10 @@
       "panel_id": "file_reader_files",
       "slot": "right",
       "title": "File Reader",
-      "tree": {}
+      "tree": {},
+      "icon": "FileText",
+      "refresh": "manual",
+      "center_overlay": false
     }
   ]
 }

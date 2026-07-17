@@ -1,23 +1,23 @@
-"""File Reader · doc-extractor engine client — the single storage/RAG plane.
+"""File Reader · engine access — delegated to the kernel's ctx.files primitive.
 
-Every uploaded file becomes stored text + chunks + embeddings in the shared
-engine, partitioned source="filereader" and scoped to the user's imperal_id
-(fail-closed). Unlike Google Drive Connector, there is no external source to
-re-fetch from: the raw bytes exist ONLY in memory for the span of the
-`ingest()` call. Once this call returns, the caller MUST discard them — from
-here on the engine holds the only copy of the extracted text, ever.
+File Mage Rule 13 (2026-07-18): there is ONE engine client in the platform —
+the kernel's (core/file_engine.FileEngine, surfaced to every extension as
+``ctx.files``). This extension no longer carries its own HTTP plumbing to the
+doc-extractor engine; it reads/searches/ingests/deletes THROUGH ctx.files,
+which is the same client the brain uses, bound to this user and the
+``filereader`` storage partition. Engine URL, auth, retry, and the
+(source, imperal_id) scoping all live in the kernel now — change them once,
+there.
 
-No embedding runs on the read path: indexing happens once, in the
-background, at ingest. Reads come straight from stored text: no re-extract,
-no re-embed, no second look at the original bytes (there is no way to get a
-second look — they were never kept).
+What stays here is extension-side, not engine-side: the extraction-truth
+classifier (``classify_extraction``), the ready/pending state vocabulary the
+lifecycle maps against, and the compact diagnostic log line. These operate on
+the dicts ctx.files returns; they make no network call.
 """
 from __future__ import annotations
 
 import json
 import logging
-
-from .helpers import DOC_EXTRACTOR_TOKEN, DOC_EXTRACTOR_URL, SOURCE
 
 log = logging.getLogger("file_reader")
 
@@ -44,15 +44,6 @@ def _diagnostic_payload(data: dict | None) -> str:
             snap[k] = truth.get(k)
     return json.dumps(snap, ensure_ascii=False, sort_keys=True)
 
-
-_DOCUMENTS_URL = f"{DOC_EXTRACTOR_URL}/v1/documents"
-_SEARCH_URL = f"{DOC_EXTRACTOR_URL}/v1/search"
-
-
-def _auth_headers() -> dict[str, str]:
-    if not DOC_EXTRACTOR_TOKEN:
-        return {}
-    return {"Authorization": f"Bearer {DOC_EXTRACTOR_TOKEN}"}
 
 # Engine statuses that mean "content is available to read/search".
 READY_STATES = ("processed", "cached")
@@ -103,62 +94,31 @@ def classify_extraction(data: dict | None) -> dict:
     }
 
 
-def imperal_id(ctx) -> str:
-    """Canonical user id scoping ALL engine storage. Missing → hard error: we
-    must never ingest/read under an unscoped or wrong identity."""
-    user = getattr(ctx, "user", None)
-    uid = getattr(user, "imperal_id", None) if user else None
-    if not uid:
-        raise RuntimeError("no user context (imperal_id) — cannot scope file storage")
-    return uid
-
-
-async def _send(ctx, method: str, url: str, **kwargs):
-    """One retry on transient 5xx / network error — absorbs the platform's
-    'first call fails, retry works' infra transients. Real 4xx are returned
-    as-is for the caller to interpret (e.g. 404 → expired/gone)."""
-    call = getattr(ctx.http, method)
-    last: Exception | None = None
-    for _ in range(2):
-        try:
-            resp = await call(url, **kwargs)
-        except Exception as e:  # noqa: BLE001 - network/timeout → retry once
-            last = e
-            continue
-        if resp.status_code >= 500:
-            last = RuntimeError(f"engine returned {resp.status_code}")
-            continue
-        return resp
-    raise last if last else RuntimeError("engine request failed")
+def _files(ctx):
+    """The kernel's per-user file client (ctx.files). It is wired by the
+    kernel context factory (File Mage L1) for every dispatch; its absence means
+    the platform is misconfigured, not a user error — fail loudly, never
+    silently fall back to a second HTTP client (Rule 13)."""
+    files = getattr(ctx, "files", None)
+    if files is None:
+        raise RuntimeError("file engine unavailable (ctx.files not wired)")
+    return files
 
 
 async def ingest(ctx, *, filename: str, content: bytes, mime_type: str | None = None) -> dict:
-    """Hand the engine the raw bytes directly (real multipart, not a
-    URL-fetch — there is nothing external to fetch from). Idempotent by
+    """Hand the engine the raw bytes through ctx.files. Idempotent by
     (source, imperal_id, sha256) on the engine side: re-sending an identical
-    file is a fast `cached` hit, no re-extract/re-embed. Returns the
-    DocumentOut dict. The caller must not retain `content` after this call
-    returns — this is the ONLY place raw bytes exist in this extension."""
-    files = {"files": (filename or "file", content, mime_type or "application/octet-stream")}
-    resp = await _send(ctx, "post", _DOCUMENTS_URL, data={
-        "source": SOURCE, "imperal_id": imperal_id(ctx),
-    }, files=files, headers=_auth_headers(), timeout=120)
-    resp.raise_for_status()
-    docs = ((resp.json() or {}).get("data") or {}).get("documents") or []
-    if not docs:
-        raise RuntimeError("engine returned no document")
-    return docs[0]
+    file is a fast `cached` hit. Returns the DocumentOut dict. The caller must
+    not retain `content` after this call — the engine holds the only copy of
+    the extracted text from here on."""
+    return await _files(ctx).ingest(content, filename, mime_type=mime_type)
 
 
 async def read_text(ctx, document_id: int, offset: int = 0, limit: int = 40_000) -> dict:
     """Windowed plain text from the engine's stored blob. Returns
     {text, offset, limit, total_chars, truncated}. Raises on 404 (deleted by
     TTL purge) / 409 (no text yet) so the caller can react (mark expired)."""
-    resp = await _send(ctx, "get", f"{_DOCUMENTS_URL}/{document_id}/text", params={
-        "source": SOURCE, "imperal_id": imperal_id(ctx), "offset": offset, "limit": limit,
-    }, headers=_auth_headers(), timeout=60)
-    resp.raise_for_status()
-    data = (resp.json() or {}).get("data") or {}
+    data = await _files(ctx).read(document_id, offset=offset, limit=limit)
     log.info(
         "doc_extractor.read_text document_id=%s payload=%s",
         document_id,
@@ -171,20 +131,12 @@ async def search(ctx, query: str, k: int = 6) -> list[dict]:
     """Semantic RAG over THIS user's filereader chunks only — top-K most
     relevant chunks (not whole files). Returns
     [{document_id, filename, seq, text, score}]."""
-    resp = await _send(ctx, "post", _SEARCH_URL, json={
-        "source": SOURCE, "imperal_id": imperal_id(ctx), "query": query, "k": k,
-    }, headers=_auth_headers(), timeout=60)
-    resp.raise_for_status()
-    return ((resp.json() or {}).get("data") or {}).get("hits") or []
+    return await _files(ctx).search(query, k=k)
 
 
 async def overview(ctx, document_id: int) -> dict:
     """Cheap recall — metadata + preview, no full read. Returns DocumentOut."""
-    resp = await _send(ctx, "get", f"{_DOCUMENTS_URL}/{document_id}", params={
-        "source": SOURCE, "imperal_id": imperal_id(ctx),
-    }, headers=_auth_headers(), timeout=30)
-    resp.raise_for_status()
-    data = (resp.json() or {}).get("data") or {}
+    data = await _files(ctx).overview(document_id)
     log.info(
         "doc_extractor.overview document_id=%s payload=%s",
         document_id,
@@ -195,12 +147,5 @@ async def overview(ctx, document_id: int) -> dict:
 
 async def delete(ctx, document_id: int) -> bool:
     """Evict a document from the engine (PG cascade + NC blob). Used by
-    forget_files. 404 = already gone (e.g. TTL already purged it) → treat as
-    done, not an error."""
-    resp = await _send(ctx, "delete", f"{_DOCUMENTS_URL}/{document_id}", params={
-        "source": SOURCE, "imperal_id": imperal_id(ctx),
-    }, headers=_auth_headers(), timeout=30)
-    if resp.status_code == 404:
-        return False
-    resp.raise_for_status()
-    return True
+    forget_files. 404 = already gone → returns False, not an error."""
+    return await _files(ctx).delete(document_id)

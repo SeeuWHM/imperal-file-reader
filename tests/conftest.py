@@ -81,6 +81,103 @@ class FakeHttp:
         return await self._next("put", url, kwargs)
 
 
+class FakeFiles:
+    """Faithful stand-in for the kernel's ctx.files (core/files_client.FilesClient
+    over core/file_engine.FileEngine). Since the extension now reaches the engine
+    THROUGH ctx.files (File Mage Rule 13), the double makes the SAME HTTP calls
+    the old in-extension client did — over the shared FakeHttp — so the state-
+    machine tests (lifecycle / content_ops) drive it via scripted HTTP responses
+    exactly as before. It also records its own method calls in `self.calls` for
+    delegation assertions. Mirrors kernel FileEngine's URLs / params / retry /
+    unwrap / 404→False / uid-required behaviour 1:1."""
+
+    def __init__(self, http, imperal_id="user-123", token="",
+                 base_url="https://api.webhostmost.com/doc-extractor", source="filereader"):
+        self._http = http
+        self._uid = str(imperal_id or "")
+        self._token = (token or "").strip()
+        self._source = source
+        base = base_url.rstrip("/")
+        self._documents_url = f"{base}/v1/documents"
+        self._search_url = f"{base}/v1/search"
+        self.calls = []
+
+    def _require_uid(self) -> str:
+        if not self._uid:
+            raise RuntimeError("no user context (imperal_id) — cannot scope file storage")
+        return self._uid
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
+
+    async def _send(self, method, url, **kwargs):
+        last = None
+        for _ in range(2):
+            try:
+                resp = await getattr(self._http, method)(url, **kwargs)
+            except Exception as e:  # noqa: BLE001 — network/timeout → retry once
+                last = e
+                continue
+            if getattr(resp, "status_code", 200) >= 500:
+                last = RuntimeError(f"engine returned {resp.status_code}")
+                continue
+            return resp
+        raise last if last else RuntimeError("engine request failed")
+
+    async def ingest(self, content, filename, mime_type=None):
+        self.calls.append(("ingest", filename, mime_type))
+        uid = self._require_uid()
+        files = {"files": (filename or "file", content, mime_type or "application/octet-stream")}
+        resp = await self._send("post", self._documents_url,
+                                data={"source": self._source, "imperal_id": uid},
+                                files=files, headers=self._headers(), timeout=120)
+        resp.raise_for_status()
+        docs = ((resp.json() or {}).get("data") or {}).get("documents") or []
+        if not docs:
+            raise RuntimeError("engine returned no document")
+        return docs[0]
+
+    async def read(self, document_id, offset=0, limit=40_000):
+        self.calls.append(("read", document_id, offset, limit))
+        uid = self._require_uid()
+        resp = await self._send("get", f"{self._documents_url}/{document_id}/text",
+                                params={"source": self._source, "imperal_id": uid,
+                                        "offset": offset, "limit": limit},
+                                headers=self._headers(), timeout=60)
+        resp.raise_for_status()
+        return (resp.json() or {}).get("data") or {}
+
+    async def search(self, query, k=6):
+        self.calls.append(("search", query, k))
+        uid = self._require_uid()
+        resp = await self._send("post", self._search_url,
+                                json={"source": self._source, "imperal_id": uid,
+                                      "query": query, "k": k},
+                                headers=self._headers(), timeout=60)
+        resp.raise_for_status()
+        return ((resp.json() or {}).get("data") or {}).get("hits") or []
+
+    async def overview(self, document_id):
+        self.calls.append(("overview", document_id))
+        uid = self._require_uid()
+        resp = await self._send("get", f"{self._documents_url}/{document_id}",
+                                params={"source": self._source, "imperal_id": uid},
+                                headers=self._headers(), timeout=30)
+        resp.raise_for_status()
+        return (resp.json() or {}).get("data") or {}
+
+    async def delete(self, document_id):
+        self.calls.append(("delete", document_id))
+        uid = self._require_uid()
+        resp = await self._send("delete", f"{self._documents_url}/{document_id}",
+                                params={"source": self._source, "imperal_id": uid},
+                                headers=self._headers(), timeout=30)
+        if getattr(resp, "status_code", 200) == 404:
+            return False
+        resp.raise_for_status()
+        return True
+
+
 class _Doc:
     """Mirror of the SDK store Document: `.id` + `.data` (dict)."""
     def __init__(self, doc_id, data):
@@ -133,10 +230,15 @@ class FakeUser:
 
 
 class FakeCtx:
-    def __init__(self, responses=None, imperal_id="user-123", with_user=True):
+    def __init__(self, responses=None, imperal_id="user-123", with_user=True, token=""):
         self.http = FakeHttp(responses or [])
         self.store = FakeStore()
         self.user = FakeUser(imperal_id) if with_user else None
+        # File Mage: the engine is reached through ctx.files (Rule 13). The
+        # double routes to the same FakeHttp, so lifecycle/content_ops tests
+        # keep scripting engine responses exactly as before.
+        self.files = FakeFiles(self.http, imperal_id=(imperal_id if with_user else ""),
+                               token=token)
 
 
 @pytest.fixture
@@ -148,6 +250,6 @@ def resp():
 @pytest.fixture
 def make_ctx():
     """Factory: make_ctx([resp(...), ConnectionError(...), ...])."""
-    def _make(responses=None, imperal_id="user-123", with_user=True):
-        return FakeCtx(responses, imperal_id, with_user)
+    def _make(responses=None, imperal_id="user-123", with_user=True, token=""):
+        return FakeCtx(responses, imperal_id, with_user, token=token)
     return _make
