@@ -195,9 +195,9 @@ async def test_ingest_sends_bearer_when_token_configured(make_ctx, resp):
         "sha256": "abc", "filename": "secured.txt", "mime": "text/plain", "size_bytes": 5,
         "preview": "hello", "status": "processed", "stage": "done", "error": None,
         "error_code": None, "chunk_count": 1, "created_at": None, "expires_at": None}
-    ]}})], token="secret-token")
+    ]}})], token="test-token-abc")
 
     doc = await extractor.ingest(ctx, filename="secured.txt", content=b"hello", mime_type="text/plain")
     assert doc["document_id"] == 3
     _, _, kwargs = ctx.http.calls[0]
-    assert kwargs["headers"] == {"Authorization": "Bearer secret-token"}
+    assert kwargs["headers"] == {"Authorization": "Bearer test-token-abc"}

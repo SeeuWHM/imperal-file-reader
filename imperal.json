@@ -1,6 +1,6 @@
 {
   "manifest_schema_version": 3,
-  "sdk_version": "5.9.11",
+  "sdk_version": "5.9.10",
   "app_id": "file-reader",
   "version": "0.2.0",
   "name": "File Reader",
