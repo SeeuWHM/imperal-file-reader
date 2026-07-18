@@ -120,22 +120,38 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
     # a re-fired on_upload (e.g. panel refresh) must NOT create a duplicate
     # record. Dedup by content hash within this batch AND against records we
     # already hold (see the duplicate-panel-entries bug, 2026-07-05).
-    held = await lifecycle.active_hashes(ctx)
+    # Map content_hash -> existing record so a RE-attached (deduped) file still
+    # returns its EXISTING file_id. The composer needs the id to reference the
+    # file, and the kernel surfaces it to Webbee; without this a dedup returned
+    # an empty file_id and the attachment looked like "nothing attached".
+    all_recs = await lifecycle.all_files(ctx)
+    by_hash = {
+        r["content_hash"]: r for r in all_recs
+        if r.get("content_hash") and r.get("status") in (lifecycle.PENDING, lifecycle.INDEXING, lifecycle.READY)
+    }
     fresh: list[tuple[str, str | None, bytes, str]] = []
     seen: set[str] = set()
     already = 0
     for fn, mime, content in decoded:
         h = hashlib.sha256(content).hexdigest()
-        if h in seen or h in held:
+        if h in seen:
             already += 1
             continue
         seen.add(h)
+        existing = by_hash.get(h)
+        if existing:
+            # Already held — return its existing id so the caller can reference it.
+            received.append({"file_id": existing["file_id"], "filename": fn,
+                             "size_bytes": existing.get("size_bytes") or len(content),
+                             "status": existing.get("status")})
+            already += 1
+            continue
         fresh.append((fn, mime, content, h))
 
     if not fresh:
         return ActionResult.success(
-            data=build_receive_result([], rejected),
-            summary=f"Already have {already} file(s) — nothing new to index."
+            data=build_receive_result(received, rejected),
+            summary=(f"Already have {already} file(s)." if already else "Nothing new to index.")
                     + (f" {len(rejected)} rejected." if rejected else ""),
         )
 
