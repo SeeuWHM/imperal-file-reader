@@ -195,6 +195,33 @@ async def ingest_now(ctx, filename: str, mime_type: str | None, content: bytes,
     return await _apply_engine_status(ctx, rec, doc)
 
 
+# ── Pre-ingested references (bytes shipped to the engine out-of-band) ─────────
+
+_BYTES_KEYS = ("data_base64", "content", "data", "base64")
+
+
+def is_reference_item(raw) -> bool:
+    """A pre-ingested engine reference: has document_id and carries NO bytes.
+    Bytes keys win — a dict with both is treated as a bytes upload (back-compat)."""
+    return (isinstance(raw, dict)
+            and raw.get("document_id") is not None
+            and not any(raw.get(k) for k in _BYTES_KEYS))
+
+
+async def adopt_reference(ctx, filename: str, mime_type: str | None, size_bytes: int,
+                          document_id, content_hash: str | None = None) -> dict:
+    """Adopt an engine document that was ingested out-of-band (the caller
+    shipped the bytes to the engine directly; only this small reference crossed
+    the call boundary). FAIL-CLOSED: the engine is asked FIRST — overview()
+    raises on a bogus/foreign document_id (the engine scopes every lookup by
+    (source, imperal_id), so another user's doc 404s) and NO record is created,
+    NO quota consumed. State mapping mirrors ingest_now exactly."""
+    doc = await extractor.overview(ctx, document_id)  # raises -> caller rejects the item
+    rec = await create_pending(ctx, filename, mime_type, int(size_bytes or 0),
+                               content_hash=content_hash)
+    return await _apply_engine_status(ctx, rec, doc)
+
+
 async def reconcile_pending(ctx) -> None:
     """Bring every non-terminal record in line with the engine (the source of
     truth) — called at the top of the read paths (panel, list, read, overview,

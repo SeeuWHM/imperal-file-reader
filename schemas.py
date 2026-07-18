@@ -16,6 +16,8 @@ class ReceiveFilesParams(BaseModel):
     # Raw payload from ui.FileUpload's on_upload action. Live-verified shape
     # (2026-07-05): list of dicts, each {data_base64, name, mime_type, size} —
     # decoded in handlers_upload._decode_one.
+    # Items: inline bytes {data_base64,name,mime_type,size} OR a pre-ingested
+    # engine reference {document_id,content_hash,name,mime_type,size} (no bytes).
     files: list = Field(default_factory=list)
 
 

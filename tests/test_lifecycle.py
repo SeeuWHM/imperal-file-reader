@@ -225,3 +225,59 @@ async def test_forget_many_pending_file_never_calls_engine_delete(make_ctx):
     rec = await lifecycle.create_pending(ctx, "a.txt", "text/plain", 5)
     removed = await lifecycle.forget_many(ctx, [rec["file_id"]])
     assert removed == 1
+
+
+# ── pre-ingested references (adopt_reference / is_reference_item) ─────────────
+
+
+def test_is_reference_item():
+    assert lifecycle.is_reference_item(
+        {"document_id": 7, "content_hash": "h", "name": "a.pdf"})
+    assert not lifecycle.is_reference_item(
+        {"data_base64": "QQ==", "name": "a.pdf"})
+    # bytes win when both are present (back-compat)
+    assert not lifecycle.is_reference_item(
+        {"document_id": 7, "data_base64": "QQ=="})
+    assert not lifecycle.is_reference_item("QQ==")
+    assert not lifecycle.is_reference_item({"name": "a.pdf"})
+
+
+async def test_adopt_reference_processed_marks_ready(make_ctx, resp):
+    ctx = make_ctx([resp(200, {"success": True, "data": {
+        "document_id": 7, "status": "processed", "chunk_count": 3,
+        "error": None, "error_code": None,
+        "expires_at": "2026-08-03T00:00:00+00:00"}})])
+    rec = await lifecycle.adopt_reference(ctx, "big.pdf", "application/pdf",
+                                          5_000_000, 7, content_hash="abc123")
+    assert rec["status"] == lifecycle.READY
+    assert rec["document_id"] == 7
+    assert rec["chunk_count"] == 3
+    assert rec["content_hash"] == "abc123"
+    assert rec["size_bytes"] == 5_000_000
+    # the engine was consulted via overview — never a (re-)ingest
+    assert ctx.files.calls[0][0] == "overview"
+    assert all(c[0] != "ingest" for c in ctx.files.calls)
+
+
+async def test_adopt_reference_still_draining_marks_indexing(make_ctx, resp):
+    ctx = make_ctx([resp(200, {"success": True, "data": {
+        "document_id": 8, "status": "processing", "chunk_count": 0,
+        "error": None, "error_code": None, "expires_at": None}})])
+    rec = await lifecycle.adopt_reference(ctx, "b.docx", None, 100, 8)
+    assert rec["status"] == lifecycle.INDEXING
+    assert rec["document_id"] == 8
+
+
+async def test_adopt_reference_bogus_id_creates_no_record(make_ctx, resp):
+    ctx = make_ctx([resp(404, {"error": {"message": "not found"}})])
+    with pytest.raises(Exception):
+        await lifecycle.adopt_reference(ctx, "x.pdf", None, 10, 999)
+    assert await lifecycle.all_files(ctx) == []  # fail-closed: nothing persisted
+
+
+async def test_adopt_reference_engine_5xx_raises_no_record(make_ctx, resp):
+    ctx = make_ctx([resp(500, {"error": {"message": "boom"}}),
+                    resp(500, {"error": {"message": "boom"}})])  # retry eats both
+    with pytest.raises(Exception):
+        await lifecycle.adopt_reference(ctx, "x.pdf", None, 10, 999)
+    assert await lifecycle.all_files(ctx) == []

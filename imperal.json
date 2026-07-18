@@ -2,7 +2,7 @@
   "manifest_schema_version": 3,
   "sdk_version": "5.9.11",
   "app_id": "file-reader",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "name": "File Reader",
   "description": "Upload files (PDF, Office, text, CSV, images, scans, and more) and Webby reads and semantically searches their contents using the extractor backend. Nothing is stored but the extracted text — your raw files are never kept.",
   "icon": "icon.svg",
@@ -21,7 +21,7 @@
     },
     {
       "name": "receive_files",
-      "description": "Receive files uploaded through the File Reader panel dropzone and start indexing them in the background. Triggered by the upload widget — not something the user calls directly.",
+      "description": "Receive files uploaded through the File Reader panel dropzone and start indexing them in the background. Triggered by the upload widget — not something the user calls directly. Items may alternatively be pre-ingested engine references {document_id, content_hash, name, mime_type, size} — no bytes.",
       "action_type": "write",
       "chain_callable": true,
       "effects": [

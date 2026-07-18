@@ -79,15 +79,37 @@ def _decode_one(raw) -> tuple[str, str | None, bytes]:
     data_model=ReceiveResult,
     description=(
         "Receive files uploaded through the File Reader panel dropzone and start indexing them "
-        "in the background. Triggered by the upload widget — not something the user calls directly."
+        "in the background. Triggered by the upload widget — not something the user calls directly. "
+        "Items may alternatively be pre-ingested engine references "
+        "{document_id, content_hash, name, mime_type, size} — no bytes."
     ),
 )
 async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
     received: list[dict] = []
     rejected: list[dict] = []
-    decoded: list[tuple[str, str | None, bytes]] = []
+    # Each candidate: {fn, mime, size, hash, content: bytes|None, document_id|None}.
+    # Two accepted item shapes: inline bytes {data_base64,name,mime_type,size} and
+    # a pre-ingested engine reference {document_id,content_hash,name,mime_type,size}
+    # (bytes were shipped to the engine out-of-band — only the reference crosses
+    # the call boundary, so the payload stays tiny).
+    candidates: list[dict] = []
 
     for raw in (params.files or []):
+        if lifecycle.is_reference_item(raw):
+            fn = raw.get("name") or raw.get("filename") or "file"
+            mime = raw.get("mime_type") or raw.get("type") or raw.get("content_type")
+            size = int(raw.get("size") or 0)
+            if (mime or "").startswith(_UNSUPPORTED_PREFIXES):
+                rejected.append({"filename": fn, "reason": "video/audio is not supported"})
+                continue
+            if size > lifecycle.MAX_SINGLE_FILE_BYTES:
+                mb = lifecycle.MAX_SINGLE_FILE_BYTES // (1024 * 1024)
+                rejected.append({"filename": fn, "reason": f"exceeds the {mb} MB per-file limit"})
+                continue
+            candidates.append({"fn": fn, "mime": mime, "size": size,
+                               "hash": raw.get("content_hash") or None,
+                               "content": None, "document_id": raw["document_id"]})
+            continue
         try:
             fn, mime, content = _decode_one(raw)
         except Exception as e:  # noqa: BLE001 — reject this item, keep the rest
@@ -103,9 +125,10 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
             mb = lifecycle.MAX_SINGLE_FILE_BYTES // (1024 * 1024)
             rejected.append({"filename": fn, "reason": f"exceeds the {mb} MB per-file limit"})
             continue
-        decoded.append((fn, mime, content))
+        candidates.append({"fn": fn, "mime": mime, "size": len(content),
+                           "hash": None, "content": content, "document_id": None})
 
-    if not decoded:
+    if not candidates:
         # DIAGNOSTIC (temporary): the on_upload payload shape is undocumented and
         # nothing decoded — surface the exact shape the frontend sent so we can
         # write a precise decoder. Never echoes file bytes.
@@ -129,24 +152,27 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
         r["content_hash"]: r for r in all_recs
         if r.get("content_hash") and r.get("status") in (lifecycle.PENDING, lifecycle.INDEXING, lifecycle.READY)
     }
-    fresh: list[tuple[str, str | None, bytes, str]] = []
+    fresh: list[dict] = []
     seen: set[str] = set()
     already = 0
-    for fn, mime, content in decoded:
-        h = hashlib.sha256(content).hexdigest()
-        if h in seen:
-            already += 1
-            continue
-        seen.add(h)
-        existing = by_hash.get(h)
-        if existing:
-            # Already held — return its existing id so the caller can reference it.
-            received.append({"file_id": existing["file_id"], "filename": fn,
-                             "size_bytes": existing.get("size_bytes") or len(content),
-                             "status": existing.get("status")})
-            already += 1
-            continue
-        fresh.append((fn, mime, content, h))
+    for c in candidates:
+        h = c["hash"] or (hashlib.sha256(c["content"]).hexdigest()
+                          if c["content"] is not None else None)
+        c["hash"] = h
+        if h:  # a reference without content_hash skips dedup (legacy hashless record)
+            if h in seen:
+                already += 1
+                continue
+            seen.add(h)
+            existing = by_hash.get(h)
+            if existing:
+                # Already held — return its existing id so the caller can reference it.
+                received.append({"file_id": existing["file_id"], "filename": c["fn"],
+                                 "size_bytes": existing.get("size_bytes") or c["size"],
+                                 "status": existing.get("status")})
+                already += 1
+                continue
+        fresh.append(c)
 
     if not fresh:
         return ActionResult.success(
@@ -156,7 +182,7 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
         )
 
     try:
-        await lifecycle.check_quota(ctx, len(fresh), sum(len(c) for _, _, c, _ in fresh))
+        await lifecycle.check_quota(ctx, len(fresh), sum(c["size"] for c in fresh))
     except Exception as e:  # noqa: BLE001 — quota is a user-facing, non-retryable decision
         return ActionResult.error(str(e), retryable=False)
 
@@ -165,10 +191,23 @@ async def fn_receive_files(ctx, params: ReceiveFilesParams) -> ActionResult:
     # engine's own durable drain loop does the heavy extraction+embedding and the
     # panel/read paths reconcile the outcome. We do NOT spawn a background task —
     # it would be cancelled on return, freezing the record (2026-07-05 bug).
-    for fn, mime, content, h in fresh:
-        rec = await lifecycle.ingest_now(ctx, fn, mime, content, content_hash=h)
-        received.append({"file_id": rec["file_id"], "filename": fn,
-                         "size_bytes": len(content), "status": rec.get("status")})
+    # Reference items adopt the already-ingested engine doc instead (fail-closed:
+    # a bogus/foreign document_id rejects THIS item only, creates no record).
+    for c in fresh:
+        if c["document_id"] is not None:
+            try:
+                rec = await lifecycle.adopt_reference(ctx, c["fn"], c["mime"], c["size"],
+                                                      c["document_id"], content_hash=c["hash"])
+            except Exception as e:  # noqa: BLE001 — reject this item, keep the rest
+                log.warning("receive_files: reference %r rejected: %s", c["document_id"], e)
+                rejected.append({"filename": c["fn"],
+                                 "reason": "unknown or inaccessible document reference"})
+                continue
+        else:
+            rec = await lifecycle.ingest_now(ctx, c["fn"], c["mime"], c["content"],
+                                             content_hash=c["hash"])
+        received.append({"file_id": rec["file_id"], "filename": c["fn"],
+                         "size_bytes": c["size"], "status": rec.get("status")})
 
     summary = f"{len(received)} file(s) received and indexing"
     if already:
