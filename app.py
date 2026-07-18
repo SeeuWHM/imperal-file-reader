@@ -21,7 +21,7 @@ log = logging.getLogger("file_reader")
 
 ext = Extension(
     "file-reader",
-    version="0.3.0",
+    version="0.3.1",
     system=True,
     display_name="File Reader",
     description=(

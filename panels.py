@@ -78,10 +78,12 @@ async def build_file_reader_panel(ctx, **kwargs) -> ui.UINode:
         ui.Header(text="File Reader", level=3),
         ui.Text("Drop files here and Webby will read and search them. Uploading a file indexes it — "
                 "no command needed.", variant="caption"),
+        # Futuristic ui.FileUpload props (variant/show_previews/title/hint) need
+        # SDK 5.9.11 — but the Dev-Portal deploy validator still runs an older
+        # SDK and rejects them. The primary upload UX is the composer paperclip
+        # (native), so this secondary panel dropzone stays on the plain, always-
+        # valid props; the @imperal/ui-kit renderer gives it a good default look.
         ui.FileUpload(multiple=True, max_size_mb=_DROPZONE_MAX_MB, accept="*",
-                      variant="futuristic", show_previews=True,
-                      title="Drop files to read",
-                      hint="PDF, Office, text, CSV, images, scans — Webby reads and searches them",
                       on_upload=ui.Call("receive_files")),
         ui.Divider(),
         ui.Text("Your files", variant="caption"),
