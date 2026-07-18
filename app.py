@@ -21,7 +21,7 @@ log = logging.getLogger("file_reader")
 
 ext = Extension(
     "file-reader",
-    version="0.3.2",
+    version="0.3.3",
     system=True,
     display_name="File Reader",
     description=(
@@ -40,9 +40,12 @@ chat = ChatExtension(
     ext=ext,
     tool_name="tool_file_reader_chat",
     description=(
-        "File Reader — the user uploads files in the panel dropzone; read their extracted text "
-        "and semantically search across them by file_id. Uploading a file indexes it automatically; "
-        "no command is needed to start. Use list_files to see what's available and its file_id."
+        "File Reader — read and semantically search the CONTENT of files the user UPLOADED or "
+        "ATTACHED here (panel dropzone or the chat paperclip), by file_id. Uploading indexes a file "
+        "automatically; no command needed. Use list_files to see what's available and its file_id. "
+        "This is the system document reader for in-panel uploads/attachments — it is NOT external "
+        "cloud storage like Google Drive (that is a separate storage connector). For 'what's in this "
+        "file', an attached/uploaded file, or a screenshot, this is the right tool."
     ),
 )
 
