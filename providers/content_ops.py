@@ -35,7 +35,7 @@ from .response_shaping import clean_preview as _clean_preview
 from .response_shaping import clean_search_snippet as _clean_search_snippet
 from .response_shaping import clean_text as _clean_text
 from .response_shaping import fit_text_budget as _fit_text_budget
-from .text_windows import grep_lines
+from .text_windows import grep_lines, line_window
 
 log = logging.getLogger("file_reader")
 
@@ -175,7 +175,7 @@ async def file_overview(ctx, file_ids: list[str]) -> list[dict]:
     return trimmed
 
 
-PREVIEW_EXCERPT_CHARS = 700   # per excerpt — token-cheap on purpose, this is NOT a full read
+PREVIEW_EXCERPT_CHARS = 500   # per excerpt — keep previews useful but cheaper; 2 excerpts still stay comfortably below token-heavy territory
 
 
 async def file_preview(ctx, file_ids: list[str]) -> list[dict]:
@@ -213,10 +213,37 @@ async def file_preview(ctx, file_ids: list[str]) -> list[dict]:
                 excerpts.append({"label": "opening", "text": opening_text})
             if total > PREVIEW_EXCERPT_CHARS * 2:
                 try:
-                    mid = await extractor.read_text(ctx, document_id, offset=total // 2, limit=PREVIEW_EXCERPT_CHARS)
-                    mid_text = _clean_text(mid.get("text", ""))
-                    if mid_text:
-                        excerpts.append({"label": "further in the document", "text": mid_text})
+                    target = total // 2
+                    # Land the second sample on a human text boundary when we can.
+                    # Starting a preview exactly in the middle of a word/table row
+                    # wastes tokens and makes OCR/CSV/spreadsheet output look worse
+                    # than it really is. We probe a small buffer before the target,
+                    # then trim to the first paragraph/line break after it.
+                    probe_offset = max(0, target - 120)
+                    probe_limit = PREVIEW_EXCERPT_CHARS + (target - probe_offset)
+                    mid = await extractor.read_text(ctx, document_id, offset=probe_offset, limit=probe_limit)
+                    mid_text_raw = _clean_text(mid.get("text", ""))
+                    if mid_text_raw:
+                        # NOTE: we deliberately do NOT compute a char index from the
+                        # raw byte offset (target - probe_offset) to locate the
+                        # boundary — _clean_text() above collapses whitespace and
+                        # decodes HTML entities, so raw-text offsets no longer line
+                        # up with positions in the cleaned string (that mismatch
+                        # was a real bug: it silently disabled the boundary search
+                        # whenever cleaning shortened the text, which is the common
+                        # case for HTML/OCR/spreadsheet output). We always asked
+                        # for a small ~120-char buffer BEFORE the real target, so
+                        # any leading partial line/word lives at the START of
+                        # mid_text_raw — search for the first paragraph/line break
+                        # from the beginning instead.
+                        cut = mid_text_raw.find("\n\n")
+                        if cut == -1:
+                            cut = mid_text_raw.find("\n")
+                        if cut != -1:
+                            mid_text_raw = mid_text_raw[cut:].lstrip()
+                        mid_text = mid_text_raw[:PREVIEW_EXCERPT_CHARS].rstrip()
+                        if mid_text:
+                            excerpts.append({"label": "further in the document", "text": mid_text})
                 except Exception:  # noqa: BLE001 - the opening excerpt alone is still a valid preview
                     pass
             out["total_chars"] = total
@@ -234,9 +261,32 @@ async def search_files(ctx, query: str, file_ids: list[str] | None = None, k: in
       - no file_ids → SEMANTIC search across ALL of this user's indexed
         files (one engine call already studies everything — top-K chunks,
         the big token saver);
-      - file_ids → EXACT substring grep across THOSE files, in PARALLEL."""
+      - file_ids → exact-in-file search across THOSE files, in PARALLEL.
+
+    For scoped searches we prefer exact grep first because it is deterministic
+    and cheap. But real extracted text often shifts punctuation/case/spacing
+    across OCR, AI-vision and spreadsheet renderers, so a whole multi-word
+    query can fail even when the file clearly contains the concept. To avoid
+    false "No matches" on real user files, we fall back to per-token matches
+    (longest useful terms first) and surface which token matched in the label.
+    Still no fabricated semantic ranking here — just more tolerant exactness.
+    """
     if file_ids:
         sem = asyncio.Semaphore(_CONCURRENCY)
+        tokens = [t.strip("\"'()[]{}:;,.!?/\\") for t in (query or "").split()]
+        tokens = [t for t in tokens if len(t) >= 3]
+        # longest-first keeps the strongest signal and avoids tiny noisy hits
+        token_queries: list[str] = []
+        seen: set[str] = set()
+        for candidate in [query, *sorted(tokens, key=len, reverse=True)]:
+            key = (candidate or "").strip()
+            if not key:
+                continue
+            lk = key.lower()
+            if lk in seen:
+                continue
+            seen.add(lk)
+            token_queries.append(key)
 
         async def _one(fid: str) -> list[dict]:
             async with sem:
@@ -245,8 +295,35 @@ async def search_files(ctx, query: str, file_ids: list[str] | None = None, k: in
                     document_id = await lifecycle.ensure_ready(ctx, rec)
                     data = await extractor.read_text(ctx, document_id, offset=0, limit=FULLTEXT_LIMIT)
                     name = rec.get("filename") or fid
-                    return [{"label": f"{name} · line {ln}", "text": line}
-                            for ln, line in grep_lines(data.get("text", ""), query)]
+                    text = data.get("text", "") or ""
+                    found: list[dict] = []
+                    used_lines: set[int] = set()
+                    for candidate in token_queries:
+                        matches = grep_lines(text, candidate)
+                        for ln, line in matches:
+                            if ln in used_lines:
+                                continue
+                            used_lines.add(ln)
+                            label = f"{name} · line {ln}"
+                            if candidate.lower() != (query or "").strip().lower():
+                                label += f" · matched: {candidate}"
+                            found.append({"label": label, "text": _clean_search_snippet(line)})
+                    if found:
+                        return found
+
+                    compact_query = " ".join((query or "").split())
+                    if compact_query and len(compact_query) >= 3:
+                        numbered, _, _ = line_window(text)
+                        numbered_matches = grep_lines(numbered, compact_query)
+                        for ln, line in numbered_matches:
+                            # ln is now the numbered-window row, while the real file line number
+                            # is already embedded in the line prefix (e.g. "42\t..."). Keep the
+                            # surface label honest and cheap instead of trying to reconstruct more.
+                            found.append({
+                                "label": f"{name} · exact phrase window",
+                                "text": _clean_search_snippet(line),
+                            })
+                    return found
                 except Exception:  # noqa: BLE001 - a not-ready/broken/expired file contributes nothing
                     return []
 

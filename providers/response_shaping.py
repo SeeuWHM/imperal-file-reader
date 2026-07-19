@@ -8,6 +8,8 @@ orchestration — these are pure helpers with no control flow of their own.
 """
 from __future__ import annotations
 
+import re
+
 from . import extractor
 
 # Kernel ceiling (verified 2026-07-06, RE-CONFIRMED LIVE 2026-07-10): Webby's
@@ -35,6 +37,65 @@ DEFAULT_SEARCH_K = 6
 MAX_SEARCH_K = 20
 _CONCURRENCY = 5               # parallel engine calls per bulk op (self-throttle)
 
+_LETTERSPACED_WORD_RE = re.compile(r"(?:\b[A-Za-zА-Яа-яЁё]\s){3,}[A-Za-zА-Яа-яЁё]\b")
+_SYMBOL_HEAVY_LINE_RE = re.compile(r"^[\W_\-–—=+|/\\]{4,}$")
+
+
+def _squash_letterspaced_words(text: str) -> str:
+    """Collapse junk like 'E N O f f i c i a l J o u r n a l' into normal words.
+
+    This is a cheap LLM-cleanup heuristic for broken PDF text layers. It is
+    intentionally conservative: only long runs of single letters separated by
+    spaces are joined, leaving ordinary prose untouched.
+    """
+    prev = None
+    cur = text
+    for _ in range(3):
+        if cur == prev:
+            break
+        prev = cur
+        cur = _LETTERSPACED_WORD_RE.sub(lambda m: m.group(0).replace(" ", ""), cur)
+    return cur
+
+
+def _looks_like_low_value_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _SYMBOL_HEAVY_LINE_RE.match(stripped):
+        return True
+    alnum = sum(ch.isalnum() for ch in stripped)
+    if alnum == 0:
+        return True
+    symbol_ratio = sum(not ch.isalnum() and not ch.isspace() for ch in stripped) / max(1, len(stripped))
+    if len(stripped) <= 8 and symbol_ratio >= 0.5:
+        return True
+    return False
+
+
+def _trim_noisy_lead(text: str) -> str:
+    """Drop only the obviously junk opening lines before the first useful block.
+
+    We keep this narrowly scoped to the *leading* fragment so image captions and
+    OCR bodies survive intact, while navigation junk / broken OCR lead-ins stop
+    wasting tokens at the very top of previews and reads.
+    """
+    lines = text.split("\n")
+    kept: list[str] = []
+    started = False
+    for line in lines:
+        stripped = line.strip()
+        if not started:
+            if not stripped:
+                continue
+            if _looks_like_low_value_line(stripped):
+                continue
+            if len(stripped) < 3:
+                continue
+            started = True
+        kept.append(line)
+    return "\n".join(kept).strip()
+
 
 def attach_extraction_truth(payload: dict, meta: dict | None) -> dict:
     """Copy backend-reported extraction truth onto a response item.
@@ -55,14 +116,40 @@ def clean_text(value: str | None) -> str:
 
     Keeps the payload cheap and readable for Webbee: trims null bytes and outer
     whitespace, normalises newlines, and collapses huge vertical gaps that only
-    waste context. Does NOT rewrite words or punctuation.
+    waste context. It also strips the common AI-vision trailing recap paragraph
+    ("The document/image ...") when the file already yielded substantial raw
+    text above it: that recap burns tokens, duplicates the evidence, and makes
+    exact search less faithful. We keep such prose when it is the ONLY thing we
+    have (e.g. a real photo with no text), so image understanding still works.
     """
     if not isinstance(value, str):
         return ""
     text = value.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    text = _squash_letterspaced_words(text)
     text = text.strip()
     while "\n\n\n" in text:
         text = text.replace("\n\n\n", "\n\n")
+    text = _trim_noisy_lead(text)
+
+    marker_pos = -1
+    for marker in ("\n\nThe document ", "\n\nThis document ", "\n\nThe image ", "\n\nThis image "):
+        pos = text.find(marker)
+        if pos != -1 and (marker_pos == -1 or pos < marker_pos):
+            marker_pos = pos
+    if marker_pos != -1:
+        before = text[:marker_pos].rstrip()
+        after = text[marker_pos + 2 :].strip()
+        if before:
+            raw_lines = [line.strip() for line in before.split("\n") if line.strip()]
+            strong_raw_signal = sum(
+                1 for line in raw_lines
+                if any(ch.isdigit() for ch in line) or any(ch in ":/@|" for ch in line)
+            )
+            if len(raw_lines) >= 8 or strong_raw_signal >= 3:
+                recap_words = len(after.split())
+                body_words = len(before.split())
+                if recap_words <= max(120, body_words // 2):
+                    text = before
     return text
 
 
@@ -83,13 +170,28 @@ def budget_share(n: int, floor: int) -> int:
 def fit_text_budget(items: list[dict], text_key: str, floor: int) -> tuple[list[dict], int]:
     """Cap item count and per-item text so the total stays within
     RESPONSE_BUDGET_CHARS. Returns (possibly-shortened items, original count)
-    so the caller can report has_more honestly instead of silently dropping."""
+    so the caller can report has_more honestly instead of silently dropping.
+
+    For search hits and previews we cut at a natural line boundary when we can,
+    because a mid-word hard cut wastes tokens and makes exact/file triage less
+    legible than it needs to be.
+    """
     total = len(items)
     max_items = max(1, RESPONSE_BUDGET_CHARS // floor)
     kept = items[:max_items]
     per = budget_share(len(kept), floor)
+    suffix_tpl = "… [{n} chars total]"
     for it in kept:
         text = it.get(text_key) or ""
-        if len(text) > per:
-            it[text_key] = text[:per] + f"… [{len(text)} chars total]"
+        if len(text) <= per:
+            continue
+        reserve = len(suffix_tpl.format(n=len(text)))
+        hard_cap = max(1, per - reserve)
+        candidate = text[:hard_cap]
+        cut = candidate.rfind("\n")
+        if cut >= max(40, hard_cap // 2):
+            candidate = candidate[:cut].rstrip()
+        else:
+            candidate = candidate.rstrip()
+        it[text_key] = candidate + suffix_tpl.format(n=len(text))
     return kept, total

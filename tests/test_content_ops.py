@@ -97,7 +97,53 @@ async def test_search_files_exact_mode_with_ids_greps_locally(make_ctx, resp):
     assert "NEEDLE" in result["results"][0]["text"]
 
 
-async def test_search_files_exact_mode_broken_file_contributes_nothing(make_ctx):
-    ctx = make_ctx([])
-    result = await content_ops.search_files(ctx, "needle", file_ids=["ghost"])
-    assert result["results"] == []
+async def test_search_files_exact_mode_falls_back_to_token_matches(make_ctx, resp):
+    ctx = make_ctx([resp(200, {"success": True, "data": {
+        "document_id": 1, "text": "FACTURA FISCALA\n1. Furnizor\n2. Cumpărător / Beneficiar",
+        "offset": 0, "limit": content_ops.FULLTEXT_LIMIT, "total_chars": 57, "truncated": False}})])
+    rec = await make_ready_file(ctx, filename="invoice.jpg", document_id=1)
+    result = await content_ops.search_files(ctx, "factura fiscala furnizor cumparator", file_ids=[rec["file_id"]])
+    assert result["mode"] == "exact"
+    assert len(result["results"]) >= 2
+    assert any("matched: furnizor" in r["label"].lower() for r in result["results"])
+    assert any("FACTURA FISCALA" in r["text"] for r in result["results"])
+
+
+async def test_clean_text_squashes_letterspaced_pdf_junk():
+    raw = "E N O f f i c i a l J o u r n a l of the European Union"
+    cleaned = content_ops._clean_text(raw)
+    assert "OfficialJournal" in cleaned
+    assert "E N O" not in cleaned
+
+
+async def test_clean_text_strips_symbol_heavy_lead_lines_but_keeps_body():
+    raw = "***\n| / \\\nInvoice #42\nTotal due"
+    cleaned = content_ops._clean_text(raw)
+    assert cleaned == "Invoice #42\nTotal due"
+
+
+async def test_clean_text_strips_trailing_ai_vision_recap_when_raw_text_is_present():
+    raw = (
+        "FACTURA FISCALA\n"
+        "AAY2322021\n"
+        "Data eliberării / Data livrării\n"
+        "02.07.2026 / 01.07.2026\n"
+        "BWB 414\n"
+        "1. Furnizor\n"
+        "C.C. AquaTrade SRL, mun. Bălți\n"
+        "2. Cumpărător / Beneficiar\n"
+        "ROCKSCOR BREWERY SRL\n\n"
+        "The document is a fiscal invoice with various details including the supplier and buyer information."
+    )
+    assert content_ops._clean_text(raw).endswith("ROCKSCOR BREWERY SRL")
+    assert "The document is a fiscal invoice" not in content_ops._clean_text(raw)
+
+
+async def test_clean_text_keeps_real_image_caption_when_no_raw_text_exists():
+    text = (
+        "The image features a young man with short, light brown hair and a small goatee. "
+        "He is wearing a light yellow sweatshirt and smiling at the camera."
+    )
+    assert content_ops._clean_text(text) == text
+
+
