@@ -29,7 +29,7 @@ Or just drag a file onto the panel dropzone — uploading indexes it automatical
 
 | Tool | Type | Purpose |
 |------|------|---------|
-| `receive_files` | write | Triggered by the panel dropzone; starts background indexing of uploaded files |
+| `receive_files` | write | Triggered by the panel dropzone / composer paperclip / Telegram attachments; accepts inline base64 items OR pre-ingested engine references `{document_id, content_hash, name, mime_type, size}` (bytes shipped to the engine out-of-band — no payload ceiling) |
 | `list_files` | read | List all uploaded files with `file_id`, status and searchability |
 | `file_overview` | read | Name / type / size / status / preview for one or more files |
 | `read_file_preview` | read | Token-cheap preview (opening excerpt + a second sample further in) plus extraction quality — check before a full read |
