@@ -1,7 +1,7 @@
 # File Reader
 
-[![Imperal SDK](https://img.shields.io/badge/imperal--sdk-5.9.3-blue)](https://pypi.org/project/imperal-sdk/)
-[![Version](https://img.shields.io/badge/version-0.1.0-green)](https://github.com/SeeuWHM/imperal-file-reader/releases)
+[![Imperal SDK](https://img.shields.io/badge/imperal--sdk-5.9.12-blue)](https://pypi.org/project/imperal-sdk/)
+[![Version](https://img.shields.io/badge/version-0.3.4-green)](https://github.com/SeeuWHM/imperal-file-reader/releases)
 [![License](https://img.shields.io/badge/license-LGPL--2.1-orange)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Imperal%20Cloud-purple)](https://panel.imperal.io)
 
@@ -60,7 +60,7 @@ handlers_files.py      list_files / forget_files
 panels.py              dropzone + file list (right slot)
 skeleton.py            cached counters (ttl 300s)
 providers/             SDK-free core (engine client, lifecycle, content ops, response shaping, text windows)
-tests/                 pytest (providers, with fakes)
+tests/                 pytest (providers, with fakes) — 71 tests
 ```
 
 ## Build
@@ -77,5 +77,5 @@ Deploy via the Developer Portal git integration (this repo's URL).
 
 ## Built with
 
-- [imperal-sdk](https://github.com/imperalcloud/imperal-sdk) 5.9
+- [imperal-sdk](https://github.com/imperalcloud/imperal-sdk) 5.9.12
 - [Imperal Cloud](https://panel.imperal.io)
